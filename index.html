@@ -18,6 +18,15 @@ function dbErr(label, error){
   console.error('[DB오류] ' + label + ':', error?.message || error);
   toast('❌ 저장 오류: ' + (error?.message || '네트워크를 확인하세요'));
 }
+
+/* ── 전화번호 자동 포맷 ── */
+function fmtPhone(el){
+  let v = el.value.replace(/[^0-9]/g,'');
+  if(v.length <= 3) el.value = v;
+  else if(v.length <= 7) el.value = v.slice(0,3)+'-'+v.slice(3);
+  else el.value = v.slice(0,3)+'-'+v.slice(3,7)+'-'+v.slice(7,11);
+}
+
 </script>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@700;800&family=Noto+Sans+KR:wght@400;500;600;700&display=swap');
@@ -4199,7 +4208,20 @@ async function saveAdminSetting(){
 
   if(newId !== oldId){
     /* 아이디 변경: 새 행 삽입 후 기존 행 삭제 */
-    const { error: insErr } = await supa.from('members').insert({ ...u, id:newId, ...updateData, referrer_id:u.referrerId||null, start_date:u.startDate||null, end_date:u.endDate||null, depth_label:u.depthLabel||'' });
+    const { error: insErr } = await supa.from('members').insert({
+      id:          newId,
+      pw:          updateData.pw || u.pw,
+      name:        newName,
+      role:        u.role || 'admin',
+      contact:     newContact || '',
+      referrer_id: u.referrerId || null,
+      start_date:  u.startDate  || null,
+      end_date:    u.endDate    || null,
+      status:      u.status     || 'active',
+      depth:       u.depth      || 0,
+      depth_label: u.depthLabel || '',
+      avatar:      u.avatar     || 'av-purple'
+    });
     if(insErr){ dbErr('계정 ID 변경', insErr); return; }
     await supa.from('members').delete().eq('id', oldId);
     ALL_MEMBERS[newId] = u;
