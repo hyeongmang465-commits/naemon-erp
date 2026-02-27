@@ -1323,6 +1323,16 @@ body.mode-desktop .sub-stat-card { max-width:640px; }
 @keyframes spin{{ to{{ transform:rotate(360deg); }} }}
 .db-loading-txt{{ color:rgba(255,255,255,0.8); font-size:.88rem; font-weight:600; }}
 
+
+@keyframes pulse{
+  0%,100%{ transform:scale(1); opacity:1; }
+  50%{ transform:scale(1.15); opacity:.8; }
+}
+@keyframes dotPulse{
+  0%,100%{ background:rgba(255,255,255,.2); transform:translateY(0); }
+  50%{ background:rgba(212,168,32,.8); transform:translateY(-4px); }
+}
+
 </style>
 </head>
 <body>
@@ -1333,9 +1343,17 @@ body.mode-desktop .sub-stat-card { max-width:640px; }
 
 <!-- DB 로딩 오버레이 -->
 <div id="db-loading">
-  <div style="font-size:2.5rem;">🦋</div>
+  <div style="font-size:2.8rem;animation:pulse 1.5s ease-in-out infinite;">🦋</div>
   <div class="db-spinner"></div>
   <div class="db-loading-txt" id="db-loading-txt">서버 연결 중...</div>
+  <div style="font-size:.7rem;color:rgba(255,255,255,.4);margin-top:8px;text-align:center;line-height:1.6;" id="db-loading-sub">
+    첫 접속 시 10~20초 소요될 수 있습니다<br>잠시만 기다려 주세요
+  </div>
+  <div style="margin-top:16px;display:flex;gap:6px;" id="db-dots">
+    <div style="width:8px;height:8px;border-radius:50%;background:rgba(255,255,255,.3);animation:dotPulse 1.2s ease-in-out 0s infinite;"></div>
+    <div style="width:8px;height:8px;border-radius:50%;background:rgba(255,255,255,.3);animation:dotPulse 1.2s ease-in-out 0.2s infinite;"></div>
+    <div style="width:8px;height:8px;border-radius:50%;background:rgba(255,255,255,.3);animation:dotPulse 1.2s ease-in-out 0.4s infinite;"></div>
+  </div>
 </div>
 
 <div class="login-screen" id="login-screen">
@@ -2228,8 +2246,33 @@ function applyLang(){
   /* 앱 재렌더 */
   /* 앱 시작: DB 로드 → 로딩 화면 숨김 */
   (async function startApp(){
+    /* 로딩 메시지 자동 업데이트 */
+    const msgs = [
+      [0,   '서버 깨우는 중...'],
+      [3000, '데이터베이스 연결 중...'],
+      [7000, '회원 데이터 로드 중...'],
+      [12000,'재고 데이터 로드 중...'],
+      [18000,'거의 다 됐어요! 조금만 기다려 주세요...'],
+    ];
+    const timers = msgs.map(([delay, msg]) =>
+      setTimeout(() => {
+        const el = document.getElementById('db-loading-txt');
+        if(el) el.textContent = msg;
+      }, delay)
+    );
+
     await loadAllDataFromDB();
+
+    /* 타이머 정리 */
+    timers.forEach(t => clearTimeout(t));
     document.getElementById('db-loading').style.display = 'none';
+
+    /* 슬립 방지: 5분마다 DB 핑 */
+    setInterval(async () => {
+      try { await supa.from('members').select('id').limit(1); }
+      catch(e) { console.log('핑 실패:', e); }
+    }, 5 * 60 * 1000);
+
     if(typeof CURRENT_USER !== 'undefined' && CURRENT_USER){ initApp(); }
   })();
   /* 뷰모드 유지 */
@@ -2286,7 +2329,7 @@ async function loadAllDataFromDB(){
 
   /* 8초 타임아웃 설정 */
   const timeout = new Promise((_, reject) =>
-    setTimeout(() => reject(new Error('연결 시간 초과 (8초)')), 8000)
+    setTimeout(() => reject(new Error('연결 시간 초과 (30초)')), 30000)
   );
 
   try {
