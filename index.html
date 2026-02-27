@@ -2323,59 +2323,35 @@ function dbRowToProduct(row){
 
 /* ── 앱 시작 시 전체 데이터 로드 ── */
 async function loadAllDataFromDB(){
-  /* 로딩 텍스트 업데이트 */
-  const loadTxt = document.getElementById('db-loading-txt');
-  const setTxt  = t => { if(loadTxt) loadTxt.textContent = t; };
-
-  /* 8초 타임아웃 설정 */
-  const timeout = new Promise((_, reject) =>
-    setTimeout(() => reject(new Error('연결 시간 초과 (30초)')), 30000)
-  );
+  const setTxt = t => {
+    const el = document.getElementById('db-loading-txt');
+    if(el) el.textContent = t;
+  };
 
   try {
-    setTxt('서버 연결 중...');
-
-    /* ── 1,2단계: 회원 + 상품 병렬 로드 ── */
-    const [
-      { data:mRows, error:mErr },
-      { data:pRows, error:pErr }
-    ] = await Promise.race([
-      Promise.all([
-        supa.from('members').select('*'),
-        supa.from('products').select('*')
-      ]),
-      timeout
-    ]);
-
+    setTxt('회원 데이터 로드 중...');
+    const { data:mRows, error:mErr } = await supa.from('members').select('*');
     if(mErr) throw mErr;
-    if(pErr) throw pErr;
     (mRows||[]).forEach(row => { ALL_MEMBERS[row.id] = dbRowToMember(row); });
+    console.log('회원 로드 완료:', (mRows||[]).length + '명');
+
+    setTxt('상품 데이터 로드 중...');
+    const { data:pRows, error:pErr } = await supa.from('products').select('*');
+    if(pErr) throw pErr;
     (pRows||[]).forEach(row => { STOCK_DATA[row.code] = dbRowToProduct(row); });
+    console.log('상품 로드 완료:', (pRows||[]).length + '개');
 
-    setTxt('이력 데이터 로드 중...');
-
-    /* ── 2단계: 이력 3개 병렬 로드 ── */
-    const [
-      { data:hRows, error:hErr },
-      { data:aRows, error:aErr },
-      { data:rRows, error:rErr }
-    ] = await Promise.all([
-      supa.from('stock_history').select('*').order('created_at',{ascending:false}).limit(200),
-      supa.from('activities').select('*').order('date',{ascending:false}).limit(500),
-      supa.from('ratings').select('*').order('created_at',{ascending:false}).limit(500)
-    ]);
-
+    setTxt('입출고 이력 로드 중...');
+    const { data:hRows, error:hErr } = await supa.from('stock_history').select('*').order('created_at',{ascending:false}).limit(200);
     if(hErr) throw hErr;
-    if(aErr) throw aErr;
-    if(rErr) throw rErr;
-
-    /* 입출고 이력 매핑 */
     (hRows||[]).forEach(row => {
       const p = STOCK_DATA[row.product_code];
       if(p) p.history.push({ t:row.type, q:row.qty, d:row.date, m:row.memo||'' });
     });
 
-    /* 활동 기록 매핑 */
+    setTxt('활동 기록 로드 중...');
+    const { data:aRows, error:aErr } = await supa.from('activities').select('*').order('date',{ascending:false}).limit(500);
+    if(aErr) throw aErr;
     (aRows||[]).forEach(row => {
       const m = ALL_MEMBERS[row.member_id];
       if(m && m.activities?.[row.type]){
@@ -2386,20 +2362,19 @@ async function loadAllDataFromDB(){
       }
     });
 
-    /* 만족도 평가 매핑 */
+    setTxt('평가 데이터 로드 중...');
+    const { data:rRows, error:rErr } = await supa.from('ratings').select('*').order('created_at',{ascending:false}).limit(500);
+    if(rErr) throw rErr;
     (rRows||[]).forEach(row => {
       const m = ALL_MEMBERS[row.member_id];
       if(m) m.ratings.push({ id:row.id, level:row.level, reason:row.reason||'', date:row.date });
     });
 
     setTxt('완료!');
-    console.log('✅ DB 로드 완료 — 회원:', Object.keys(ALL_MEMBERS).length, '상품:', Object.keys(STOCK_DATA).length);
+    console.log('✅ 전체 DB 로드 완료');
 
   } catch(e) {
     console.error('DB 로드 오류:', e);
-    /* 타임아웃/오류 시 로딩 화면 숨기고 로그인 화면 표시 */
-    document.getElementById('db-loading').style.display = 'none';
-    /* admin 기본값 세팅 (오프라인 fallback) */
     if(!ALL_MEMBERS['admin']){
       ALL_MEMBERS['admin'] = {
         id:'admin', pw:'admin123', name:'관리자', role:'admin',
@@ -2411,10 +2386,7 @@ async function loadAllDataFromDB(){
         activities:{online:[],visit:[],seminar:[]}, ratings:[]
       };
     }
-    const errMsg = e.message?.includes('시간 초과')
-      ? '⚠️ 서버 연결 시간 초과\n잠시 후 다시 시도해 주세요'
-      : '⚠️ 데이터 로드 실패\n네트워크를 확인해 주세요';
-    alert(errMsg);
+    alert('⚠️ 데이터 로드 실패: ' + e.message);
   }
 }
 
