@@ -4,6 +4,21 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>(주)내몸애맞게 ERP</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>
+/* ════════════════════════════════════════════════════
+   Supabase 설정
+════════════════════════════════════════════════════ */
+const SUPA_URL = 'https://xmybeykosuizaeozlqqn.supabase.co';
+const SUPA_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhteWJleWtvc3VpemFlb3pscXFuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzIxNDUyNjgsImV4cCI6MjA4NzcyMTI2OH0.VqmteK_k0mUZsa_o9ilRnm3SX00gyGGQgFLN-t_rEEM';
+const supa = supabase.createClient(SUPA_URL, SUPA_KEY);
+
+/* ── DB 헬퍼: 에러 로깅 ── */
+function dbErr(label, error){
+  console.error('[DB오류] ' + label + ':', error?.message || error);
+  toast('❌ 저장 오류: ' + (error?.message || '네트워크를 확인하세요'));
+}
+</script>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@700;800&family=Noto+Sans+KR:wght@400;500;600;700&display=swap');
 
@@ -1291,6 +1306,23 @@ body.mode-desktop .sub-stat-card { max-width:640px; }
 }
 .rpt-detail-name{ font-size:1rem; font-weight:800; color:var(--pm); }
 
+
+/* ── 로딩 오버레이 ── */
+#db-loading{
+  position:fixed; inset:0; z-index:9999;
+  background:linear-gradient(160deg,var(--pd),var(--pm));
+  display:flex; flex-direction:column;
+  align-items:center; justify-content:center; gap:16px;
+}
+.db-spinner{
+  width:48px; height:48px; border-radius:50%;
+  border:4px solid rgba(255,255,255,0.2);
+  border-top-color:var(--gb);
+  animation:spin .8s linear infinite;
+}
+@keyframes spin{{ to{{ transform:rotate(360deg); }} }}
+.db-loading-txt{{ color:rgba(255,255,255,0.8); font-size:.88rem; font-weight:600; }}
+
 </style>
 </head>
 <body>
@@ -1298,6 +1330,14 @@ body.mode-desktop .sub-stat-card { max-width:640px; }
 <!-- ════════════════════════════════
      로그인 화면
 ════════════════════════════════ -->
+
+<!-- DB 로딩 오버레이 -->
+<div id="db-loading">
+  <div style="font-size:2.5rem;">🦋</div>
+  <div class="db-spinner"></div>
+  <div class="db-loading-txt">데이터 불러오는 중...</div>
+</div>
+
 <div class="login-screen" id="login-screen">
   <div class="login-inner">
     <div class="login-logo">
@@ -2186,7 +2226,12 @@ function applyLang(){
   Object.entries(_pageMap).forEach(([id,txt])=>{ const e=document.getElementById(id);if(e)e.textContent=txt; });
 
   /* 앱 재렌더 */
-  if(typeof CURRENT_USER !== 'undefined' && CURRENT_USER){ initApp(); }
+  /* 앱 시작: DB 로드 → 로딩 화면 숨김 */
+  (async function startApp(){
+    await loadAllDataFromDB();
+    document.getElementById('db-loading').style.display = 'none';
+    if(typeof CURRENT_USER !== 'undefined' && CURRENT_USER){ initApp(); }
+  })();
   /* 뷰모드 유지 */
   if(typeof applyViewMode === 'function') applyViewMode();
 }
@@ -2194,10 +2239,91 @@ function applyLang(){
 /* ════════════════════════════════════════
    전체 회원 데이터 (관리자만 전부 접근)
 ════════════════════════════════════════ */
-const ALL_MEMBERS = {
-  admin:{ id:'admin', name:'관리자', role:'admin', initial:'관', depthLabel:'', contact:'010-0000-0000',
-    referrerId:null, startDate:'2024-01-01', endDate:'2099-12-31', status:'active', ddayClass:'ok',
-    pw:'admin123'
+const ALL_MEMBERS = {}; /* DB에서 로드 */
+const STOCK_DATA_RESET = {}; /* 초기값 */
+
+/* ── DB 행 → 앱 객체 변환 ── */
+function dbRowToMember(row){
+  const today = new Date();
+  const end   = new Date(row.end_date);
+  const ddays = Math.ceil((end - today) / 86400000);
+  return {
+    id:         row.id,
+    pw:         row.pw,
+    name:       row.name,
+    initial:    row.name?.[0] || '?',
+    role:       row.role,
+    contact:    row.contact || '',
+    referrerId: row.referrer_id || null,
+    startDate:  row.start_date || '',
+    endDate:    row.end_date   || '',
+    status:     row.status     || 'active',
+    depth:      row.depth      || 0,
+    depthLabel: row.depth_label|| 'ROOT',
+    avatar:     row.avatar     || 'av-purple',
+    dday:       ddays > 0 ? 'D-'+ddays : 'D+'+Math.abs(ddays),
+    ddayClass:  ddays > 30 ? 'safe' : ddays > 7 ? 'warn' : ddays > 0 ? 'danger' : 'expired',
+    direct:0, indirect:0, total:0,
+    activities: { online:[], visit:[], seminar:[] },
+    ratings:    []
+  };
+}
+
+function dbRowToProduct(row){
+  return {
+    code: row.code, name: row.name,
+    qty:  row.qty,  safe: row.safe, max: row.max,
+    monthly:{ labels:['8월','9월','10월','11월','12월','1월'], inArr:[0,0,0,0,0,0], outArr:[0,0,0,0,0,0] },
+    history:[]
+  };
+}
+
+/* ── 앱 시작 시 전체 데이터 로드 ── */
+async function loadAllDataFromDB(){
+  try {
+    /* 회원 로드 */
+    const { data:mRows, error:mErr } = await supa.from('members').select('*');
+    if(mErr) throw mErr;
+    (mRows||[]).forEach(row => { ALL_MEMBERS[row.id] = dbRowToMember(row); });
+
+    /* 상품 로드 */
+    const { data:pRows, error:pErr } = await supa.from('products').select('*');
+    if(pErr) throw pErr;
+    (pRows||[]).forEach(row => { STOCK_DATA[row.code] = dbRowToProduct(row); });
+
+    /* 입출고 이력 로드 */
+    const { data:hRows, error:hErr } = await supa.from('stock_history').select('*').order('created_at',{ascending:false});
+    if(hErr) throw hErr;
+    (hRows||[]).forEach(row => {
+      const p = STOCK_DATA[row.product_code];
+      if(p) p.history.push({ t:row.type, q:row.qty, d:row.date, m:row.memo||'' });
+    });
+
+    /* 활동 기록 로드 */
+    const { data:aRows, error:aErr } = await supa.from('activities').select('*').order('date',{ascending:false});
+    if(aErr) throw aErr;
+    (aRows||[]).forEach(row => {
+      const m = ALL_MEMBERS[row.member_id];
+      if(m && m.activities?.[row.type]) {
+        m.activities[row.type].push({
+          id: row.id, date:row.date, time:row.time||'',
+          place:row.place||'', attend:row.attend||'attend', memo:row.memo||''
+        });
+      }
+    });
+
+    /* 만족도 평가 로드 */
+    const { data:rRows, error:rErr } = await supa.from('ratings').select('*').order('created_at',{ascending:false});
+    if(rErr) throw rErr;
+    (rRows||[]).forEach(row => {
+      const m = ALL_MEMBERS[row.member_id];
+      if(m) m.ratings.push({ id:row.id, level:row.level, reason:row.reason||'', date:row.date });
+    });
+
+    console.log('✅ DB 로드 완료 — 회원:', Object.keys(ALL_MEMBERS).length, '상품:', Object.keys(STOCK_DATA).length);
+  } catch(e) {
+    console.error('DB 로드 오류:', e);
+    toast('⚠️ 데이터 로드 실패 — 네트워크를 확인하세요');
   }
 }
 
@@ -2218,18 +2344,38 @@ function getVisibleMembers(viewerId){
 let CURRENT_USER = null;
 
 /* ════ 로그인 ════ */
-function doLogin(){
+async function doLogin(){
   const _idEl=document.getElementById('login-id-inp');
   const _pwEl=document.getElementById('login-pw-inp');
-  if(!_idEl||!_pwEl){ console.warn('로그인 인풋을 찾을 수 없습니다'); return; }
+  if(!_idEl||!_pwEl) return;
   const id=_idEl.value.trim();
   const pw=_pwEl.value.trim();
-  const user = ALL_MEMBERS[id];
-  if(!user || user.pw !== pw){
-    document.getElementById('login-error').style.display='block';
-    return;
+  if(!id||!pw){ document.getElementById('login-error').style.display='block'; return; }
+
+  /* 로그인 버튼 비활성화 */
+  const btn = document.querySelector('.login-btn');
+  if(btn){ btn.textContent='확인 중...'; btn.disabled=true; }
+
+  try {
+    const { data, error } = await supa
+      .from('members')
+      .select('*')
+      .eq('id', id)
+      .eq('pw', pw)
+      .single();
+
+    if(error || !data){
+      document.getElementById('login-error').style.display='block';
+      if(btn){ btn.textContent='로그인'; btn.disabled=false; }
+      return;
+    }
+    /* DB 데이터를 ALL_MEMBERS에 매핑 */
+    ALL_MEMBERS[data.id] = dbRowToMember(data);
+    loginAs(ALL_MEMBERS[data.id]);
+  } catch(e){
+    dbErr('로그인', e);
+    if(btn){ btn.textContent='로그인'; btn.disabled=false; }
   }
-  loginAs(user);
 }
 function quickLogin(id){ loginAs(ALL_MEMBERS[id]); }
 function loginAs(user){
@@ -2808,7 +2954,7 @@ function regValidate(){
 }
 
 /* 등록 제출 */
-function submitRegister(){
+async function submitRegister(){
   const name  = document.getElementById('reg-name').value.trim();
   const phone = document.getElementById('reg-phone').value.trim();
   const start = document.getElementById('reg-start').value;
@@ -2826,23 +2972,43 @@ function submitRegister(){
   if(dup){ errEl.textContent=`❌ 이미 등록된 번호입니다 (${dup.name}).`; errEl.style.display='block'; return; }
   errEl.style.display='none';
 
-  // 신규 회원 데이터 생성 (데모: 메모리에만 추가)
   const newId = 'member_' + Date.now();
   const refMember = refId ? ALL_MEMBERS[refId] : null;
   const newDepth  = refMember ? (refMember.depth+1) : 0;
   const depthLabels={0:'ROOT',1:'1촌',2:'2촌',3:'3촌'};
   const avatarList=['av-green','av-purple','av-red','av-orange'];
+  const avatarVal = avatarList[Math.floor(Math.random()*avatarList.length)];
 
-  ALL_MEMBERS[newId] = {
-    id:newId, pw:'', name, initial:name[0], role:'member',
-    contact:phone, depth:newDepth,
-    depthLabel:depthLabels[newDepth]||newDepth+'촌',
-    avatar:avatarList[Math.floor(Math.random()*avatarList.length)],
-    status:'active', endDate:end,
-    dday:'D-'+(Math.ceil((new Date(end)-new Date())/86400000)),
-    ddayClass:'safe', referrerId:refId||null,
-    direct:0, indirect:0, total:0
-  };
+  /* DB INSERT */
+  const btn = document.getElementById('reg-submit-btn');
+  if(btn){ btn.textContent='등록 중...'; btn.disabled=true; }
+
+  const { error: regErr } = await supa.from('members').insert({
+    id:           newId,
+    pw:           '',
+    name:         name,
+    role:         'member',
+    contact:      phone,
+    referrer_id:  refId || null,
+    start_date:   start,
+    end_date:     end,
+    status:       'active',
+    depth:        newDepth,
+    depth_label:  depthLabels[newDepth]||newDepth+'촌',
+    avatar:       avatarVal
+  });
+
+  if(regErr){ dbErr('회원 등록', regErr); if(btn){btn.textContent='등록';btn.disabled=false;} return; }
+
+  /* 메모리 반영 */
+  ALL_MEMBERS[newId] = dbRowToMember({
+    id:newId, pw:'', name, role:'member', contact:phone,
+    referrer_id:refId||null, start_date:start, end_date:end,
+    status:'active', depth:newDepth,
+    depth_label:depthLabels[newDepth]||newDepth+'촌', avatar:avatarVal
+  });
+
+  if(btn){ btn.textContent='등록'; btn.disabled=false; }
 
   // 링크 생성
   const memberLink = generateMemberLink(phone);
@@ -2949,7 +3115,7 @@ function resetRegForm(){
 /* ═══════════════════════════════════════
    재고 DB + 패널 기능
 ═══════════════════════════════════════ */
-const STOCK_DATA = {}
+const STOCK_DATA = {}; /* DB에서 로드 */
 let spCode = null;
 window._dynamicAlerts = []; // 동적 알림 저장소
 
@@ -3137,7 +3303,7 @@ function siInit(){
   const e=document.getElementById('si-err');  if(e) e.style.display='none';
   siUpdatePreview();
 }
-function submitStockIn(){
+async function submitStockIn(){
   const code=document.getElementById('si-product').value;
   const qty =parseInt(document.getElementById('si-qty').value)||0;
   const date=document.getElementById('si-date').value;
@@ -3148,11 +3314,20 @@ function submitStockIn(){
   if(qty<=0){ errEl.textContent='❌ 수량은 1개 이상이어야 합니다.'; errEl.style.display='block'; return; }
   if(!date) { errEl.textContent='❌ 입고일을 선택하세요.'; errEl.style.display='block'; return; }
   errEl.style.display='none';
-  // ★ 재고 반영
-  p.qty+=qty;
+
+  /* DB: 재고 업데이트 + 이력 삽입 */
+  const newQty = p.qty + qty;
+  const [{ error:uErr }, { error:hErr }] = await Promise.all([
+    supa.from('products').update({ qty: newQty }).eq('code', code),
+    supa.from('stock_history').insert({ product_code:code, type:'in', qty, date, memo })
+  ]);
+  if(uErr){ dbErr('입고 재고 업데이트', uErr); return; }
+  if(hErr){ dbErr('입고 이력 저장', hErr); return; }
+
+  // 메모리 반영
+  p.qty = newQty;
   p.history.unshift({t:'in',q:qty,d:date,m:memo});
   if(p.monthly?.inArr) p.monthly.inArr[p.monthly.inArr.length-1]+=qty;
-  // UI 갱신
   spUpdateListItem(code,p);
   refreshStockKPI();
   if(document.getElementById('sp-panel')?.classList.contains('open') && spCode===code){
@@ -3192,7 +3367,7 @@ function soInit(){
   const e=document.getElementById('so-err');  if(e) e.style.display='none';
   soUpdatePreview();
 }
-function submitStockOut(){
+async function submitStockOut(){
   const code=document.getElementById('so-product').value;
   const qty =parseInt(document.getElementById('so-qty').value)||0;
   const date=document.getElementById('so-date').value;
@@ -3204,11 +3379,20 @@ function submitStockOut(){
   if(qty>p.qty){ errEl.textContent='❌ 현재 재고('+p.qty+'개)보다 많습니다.'; errEl.style.display='block'; return; }
   if(!date)   { errEl.textContent='❌ 출고일을 선택하세요.'; errEl.style.display='block'; return; }
   errEl.style.display='none';
-  // ★ 재고 반영
-  p.qty-=qty;
+
+  /* DB: 재고 업데이트 + 이력 삽입 */
+  const newQty2 = p.qty - qty;
+  const [{ error:uErr2 }, { error:hErr2 }] = await Promise.all([
+    supa.from('products').update({ qty: newQty2 }).eq('code', code),
+    supa.from('stock_history').insert({ product_code:code, type:'out', qty, date, memo })
+  ]);
+  if(uErr2){ dbErr('출고 재고 업데이트', uErr2); return; }
+  if(hErr2){ dbErr('출고 이력 저장', hErr2); return; }
+
+  // 메모리 반영
+  p.qty = newQty2;
   p.history.unshift({t:'out',q:qty,d:date,m:memo});
   if(p.monthly?.outArr) p.monthly.outArr[p.monthly.outArr.length-1]+=qty;
-  // UI 갱신
   spUpdateListItem(code,p);
   refreshStockKPI();
   if(document.getElementById('sp-panel')?.classList.contains('open') && spCode===code){
@@ -3752,11 +3936,15 @@ function pmApplySelect(){
 }
 
 /* ── 상품 삭제 ── */
-function pmDeleteProduct(){
+async function pmDeleteProduct(){
   const code = document.getElementById('pm-product')?.value;
   if(!code || !STOCK_DATA[code]){ toast('❌ 삭제할 상품을 선택하세요'); return; }
   const name = STOCK_DATA[code].name;
   if(!confirm('⚠️ [' + name + '] 을(를) 삭제하시겠습니까? 재고 기록도 함께 삭제됩니다.')) return;
+
+  const { error: delErr } = await supa.from('products').delete().eq('code', code);
+  if(delErr){ dbErr('상품 삭제', delErr); return; }
+
   delete STOCK_DATA[code];
   renderStockList();
   syncProductSelects(null);
@@ -3766,7 +3954,7 @@ function pmDeleteProduct(){
 }
 
 /* ── 신규 상품 등록 ── */
-function submitNewProduct(){
+async function submitNewProduct(){
   const nameEl = document.getElementById('np-name');
   const safeEl = document.getElementById('np-safe');
   const maxEl  = document.getElementById('np-max');
@@ -3799,30 +3987,28 @@ function submitNewProduct(){
   }
   errEl.style.display='none';
 
-  /* 코드 생성 & 데이터 추가 */
   const code = genProductCode();
-  const today = new Date().toISOString().split('T')[0];
   const monthLabels = ['8월','9월','10월','11월','12월','1월'];
 
+  /* DB INSERT */
+  const { error: prodErr } = await supa.from('products').insert({ code, name, qty:0, safe, max });
+  if(prodErr){ dbErr('상품 등록', prodErr); return; }
+
+  /* 메모리 반영 */
   STOCK_DATA[code] = {
     name, code, qty:0, safe, max,
-    monthly:{ labels: monthLabels, inArr:[0,0,0,0,0,0], outArr:[0,0,0,0,0,0] },
-    history: []
+    monthly:{ labels:monthLabels, inArr:[0,0,0,0,0,0], outArr:[0,0,0,0,0,0] },
+    history:[]
   };
 
-  /* 재고 목록 & 드롭다운 갱신 */
   renderStockList();
   syncProductSelects(code);
   refreshStockKPI();
-
-  /* 모달 닫고 바로 입고 시트 해당 상품 선택 */
   closeProdModal();
 
-  /* 입고 시트 선택 반영 */
   const targetSel = document.getElementById(_prodModalFrom==='in' ? 'si-product' : 'so-product');
   if(targetSel){ targetSel.value = code; }
   siUpdatePreview(); soUpdatePreview();
-
   toast('✅ [' + name + '] 등록 완료! 수량을 입력해 입고하세요 📥');
 }
 
@@ -3913,7 +4099,7 @@ function openAdminSetting(){
 }
 
 /* 관리자 설정 저장 */
-function saveAdminSetting(){
+async function saveAdminSetting(){
   const errEl = document.getElementById('as-err');
   const okEl  = document.getElementById('as-ok');
   function showErr(msg){ errEl.textContent=msg; errEl.style.display='block'; okEl.style.display='none'; }
@@ -3956,14 +4142,24 @@ function saveAdminSetting(){
     u.pw = newPw;
   }
 
-  /* ── 아이디 변경: 키 교체 ── */
+  /* ── DB UPDATE ── */
   const oldId = u.id;
+  const updateData = { name:newName, contact:newContact };
+  if(newPw && curPw && newPw===newPw2) updateData.pw = newPw;
+
   if(newId !== oldId){
+    /* 아이디 변경: 새 행 삽입 후 기존 행 삭제 */
+    const { error: insErr } = await supa.from('members').insert({ ...u, id:newId, ...updateData, referrer_id:u.referrerId||null, start_date:u.startDate||null, end_date:u.endDate||null, depth_label:u.depthLabel||'' });
+    if(insErr){ dbErr('계정 ID 변경', insErr); return; }
+    await supa.from('members').delete().eq('id', oldId);
     ALL_MEMBERS[newId] = u;
     delete ALL_MEMBERS[oldId];
+  } else {
+    const { error: updErr } = await supa.from('members').update(updateData).eq('id', oldId);
+    if(updErr){ dbErr('계정 정보 수정', updErr); return; }
   }
 
-  /* ── 정보 업데이트 ── */
+  /* ── 메모리 업데이트 ── */
   u.id      = newId;
   u.name    = newName;
   u.initial = newName[0];
@@ -4100,7 +4296,7 @@ function setAttend(val){
 }
 
 /* ── 활동 기록 저장 ── */
-function submitActRecord(){
+async function submitActRecord(){
   const date  = document.getElementById('act-date')?.value  || '';
   const time  = document.getElementById('act-time')?.value  || '';
   const place = document.getElementById('act-place')?.value.trim() || '';
@@ -4113,9 +4309,17 @@ function submitActRecord(){
   const m = ensureMemberData(CURRENT_USER?.id);
   if(!m) return;
 
+  /* DB INSERT */
+  const { data: actData, error: actErr } = await supa.from('activities').insert({
+    member_id: CURRENT_USER.id,
+    type:      _curActType,
+    attend:    _curAttend,
+    date, time, place, memo
+  }).select().single();
+  if(actErr){ dbErr('활동 기록 저장', actErr); return; }
+
   m.activities[_curActType].push({
-    date, time, place, attend:_curAttend, memo,
-    ts: Date.now()
+    id: actData?.id, date, time, place, attend:_curAttend, memo
   });
 
   closeSheet('act-input');
@@ -4124,9 +4328,14 @@ function submitActRecord(){
 }
 
 /* ── 활동 기록 삭제 ── */
-function deleteActRecord(type, idx){
+async function deleteActRecord(type, idx){
   const m = ensureMemberData(CURRENT_USER?.id);
   if(!m) return;
+  const record = m.activities[type][idx];
+  if(record?.id){
+    const { error } = await supa.from('activities').delete().eq('id', record.id);
+    if(error){ dbErr('활동 삭제', error); return; }
+  }
   m.activities[type].splice(idx, 1);
   renderActList(type, m.activities[type]);
   toast('🗑️ 기록이 삭제되었습니다');
@@ -4146,7 +4355,7 @@ function selectRating(val){
   });
 }
 
-function submitRating(){
+async function submitRating(){
   const errEl  = document.getElementById('rating-err');
   const reason = document.getElementById('rating-reason')?.value.trim() || '';
 
@@ -4158,12 +4367,19 @@ function submitRating(){
   const m = ensureMemberData(CURRENT_USER?.id);
   if(!m) return;
 
-  const labelMap = { great:'😄 매우 만족', good:'🙂 만족', bad:'😞 불만족' };
   const today = new Date().toISOString().split('T')[0];
 
-  m.ratings.unshift({ level:_curRating, reason, date:today, ts:Date.now() });
+  /* DB INSERT */
+  const { data: rData, error: rErr } = await supa.from('ratings').insert({
+    member_id: CURRENT_USER.id,
+    level:     _curRating,
+    reason,
+    date:      today
+  }).select().single();
+  if(rErr){ dbErr('평가 저장', rErr); return; }
 
-  /* 초기화 */
+  m.ratings.unshift({ id:rData?.id, level:_curRating, reason, date:today });
+
   _curRating = '';
   ['great','good','bad'].forEach(r => {
     const el = document.getElementById('ropt-'+r);
