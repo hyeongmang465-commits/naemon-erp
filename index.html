@@ -1335,7 +1335,7 @@ body.mode-desktop .sub-stat-card { max-width:640px; }
 <div id="db-loading">
   <div style="font-size:2.5rem;">🦋</div>
   <div class="db-spinner"></div>
-  <div class="db-loading-txt">데이터 불러오는 중...</div>
+  <div class="db-loading-txt" id="db-loading-txt">서버 연결 중...</div>
 </div>
 
 <div class="login-screen" id="login-screen">
@@ -2280,50 +2280,98 @@ function dbRowToProduct(row){
 
 /* ── 앱 시작 시 전체 데이터 로드 ── */
 async function loadAllDataFromDB(){
-  try {
-    /* 회원 로드 */
-    const { data:mRows, error:mErr } = await supa.from('members').select('*');
-    if(mErr) throw mErr;
-    (mRows||[]).forEach(row => { ALL_MEMBERS[row.id] = dbRowToMember(row); });
+  /* 로딩 텍스트 업데이트 */
+  const loadTxt = document.getElementById('db-loading-txt');
+  const setTxt  = t => { if(loadTxt) loadTxt.textContent = t; };
 
-    /* 상품 로드 */
-    const { data:pRows, error:pErr } = await supa.from('products').select('*');
+  /* 8초 타임아웃 설정 */
+  const timeout = new Promise((_, reject) =>
+    setTimeout(() => reject(new Error('연결 시간 초과 (8초)')), 8000)
+  );
+
+  try {
+    setTxt('서버 연결 중...');
+
+    /* ── 1,2단계: 회원 + 상품 병렬 로드 ── */
+    const [
+      { data:mRows, error:mErr },
+      { data:pRows, error:pErr }
+    ] = await Promise.race([
+      Promise.all([
+        supa.from('members').select('*'),
+        supa.from('products').select('*')
+      ]),
+      timeout
+    ]);
+
+    if(mErr) throw mErr;
     if(pErr) throw pErr;
+    (mRows||[]).forEach(row => { ALL_MEMBERS[row.id] = dbRowToMember(row); });
     (pRows||[]).forEach(row => { STOCK_DATA[row.code] = dbRowToProduct(row); });
 
-    /* 입출고 이력 로드 */
-    const { data:hRows, error:hErr } = await supa.from('stock_history').select('*').order('created_at',{ascending:false});
+    setTxt('이력 데이터 로드 중...');
+
+    /* ── 2단계: 이력 3개 병렬 로드 ── */
+    const [
+      { data:hRows, error:hErr },
+      { data:aRows, error:aErr },
+      { data:rRows, error:rErr }
+    ] = await Promise.all([
+      supa.from('stock_history').select('*').order('created_at',{ascending:false}).limit(200),
+      supa.from('activities').select('*').order('date',{ascending:false}).limit(500),
+      supa.from('ratings').select('*').order('created_at',{ascending:false}).limit(500)
+    ]);
+
     if(hErr) throw hErr;
+    if(aErr) throw aErr;
+    if(rErr) throw rErr;
+
+    /* 입출고 이력 매핑 */
     (hRows||[]).forEach(row => {
       const p = STOCK_DATA[row.product_code];
       if(p) p.history.push({ t:row.type, q:row.qty, d:row.date, m:row.memo||'' });
     });
 
-    /* 활동 기록 로드 */
-    const { data:aRows, error:aErr } = await supa.from('activities').select('*').order('date',{ascending:false});
-    if(aErr) throw aErr;
+    /* 활동 기록 매핑 */
     (aRows||[]).forEach(row => {
       const m = ALL_MEMBERS[row.member_id];
-      if(m && m.activities?.[row.type]) {
+      if(m && m.activities?.[row.type]){
         m.activities[row.type].push({
-          id: row.id, date:row.date, time:row.time||'',
+          id:row.id, date:row.date, time:row.time||'',
           place:row.place||'', attend:row.attend||'attend', memo:row.memo||''
         });
       }
     });
 
-    /* 만족도 평가 로드 */
-    const { data:rRows, error:rErr } = await supa.from('ratings').select('*').order('created_at',{ascending:false});
-    if(rErr) throw rErr;
+    /* 만족도 평가 매핑 */
     (rRows||[]).forEach(row => {
       const m = ALL_MEMBERS[row.member_id];
       if(m) m.ratings.push({ id:row.id, level:row.level, reason:row.reason||'', date:row.date });
     });
 
+    setTxt('완료!');
     console.log('✅ DB 로드 완료 — 회원:', Object.keys(ALL_MEMBERS).length, '상품:', Object.keys(STOCK_DATA).length);
+
   } catch(e) {
     console.error('DB 로드 오류:', e);
-    toast('⚠️ 데이터 로드 실패 — 네트워크를 확인하세요');
+    /* 타임아웃/오류 시 로딩 화면 숨기고 로그인 화면 표시 */
+    document.getElementById('db-loading').style.display = 'none';
+    /* admin 기본값 세팅 (오프라인 fallback) */
+    if(!ALL_MEMBERS['admin']){
+      ALL_MEMBERS['admin'] = {
+        id:'admin', pw:'admin123', name:'관리자', role:'admin',
+        initial:'관', contact:'', referrerId:null,
+        startDate:'2024-01-01', endDate:'2099-12-31',
+        status:'active', depth:0, depthLabel:'',
+        avatar:'av-purple', dday:'', ddayClass:'ok',
+        direct:0, indirect:0, total:0,
+        activities:{online:[],visit:[],seminar:[]}, ratings:[]
+      };
+    }
+    const errMsg = e.message?.includes('시간 초과')
+      ? '⚠️ 서버 연결 시간 초과\n잠시 후 다시 시도해 주세요'
+      : '⚠️ 데이터 로드 실패\n네트워크를 확인해 주세요';
+    alert(errMsg);
   }
 }
 
