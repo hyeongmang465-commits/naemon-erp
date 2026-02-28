@@ -27,6 +27,346 @@ function fmtPhone(el){
   else el.value = v.slice(0,3)+'-'+v.slice(3,7)+'-'+v.slice(7,11);
 }
 
+
+/* ════════════════════════════════════════════════════════
+   💰 보상플랜 시스템 JavaScript
+════════════════════════════════════════════════════════ */
+
+/* ── 전역 데이터 ── */
+let ALL_COMPS = [];          // 전체 수당 내역
+let ALL_REVENUE = [];        // 월 매출 내역
+let ALL_PERF = [];           // 성과 점수
+let _curCompType = '';       // 현재 선택 모델
+
+/* ── DB → 메모리 로드 (loadAllDataFromDB에서 호출) ── */
+async function loadCompData(){
+  /* 테이블이 없어도 앱이 멈추지 않도록 개별 처리 */
+  try {
+    const { data:cRows, error:cErr } = await supa.from('compensations')
+      .select('*').order('created_at',{ascending:false});
+    if(!cErr && cRows) ALL_COMPS = cRows;
+    else console.warn('compensations 로드 스킵:', cErr?.message);
+  } catch(e){ console.warn('compensations 오류:', e.message); }
+
+  try {
+    const { data:rRows, error:rErr } = await supa.from('monthly_revenue')
+      .select('*').order('month',{ascending:false});
+    if(!rErr && rRows) ALL_REVENUE = rRows;
+    else console.warn('monthly_revenue 로드 스킵:', rErr?.message);
+  } catch(e){ console.warn('monthly_revenue 오류:', e.message); }
+
+  try {
+    const { data:pRows, error:pErr } = await supa.from('performance_scores')
+      .select('*').order('total_score',{ascending:false});
+    if(!pErr && pRows) ALL_PERF = pRows;
+    else console.warn('performance_scores 로드 스킵:', pErr?.message);
+  } catch(e){ console.warn('performance_scores 오류:', e.message); }
+
+  console.log('✅ 보상플랜 로드 완료 — 수당:', ALL_COMPS.length, '건');
+}
+
+/* ── 금액 포맷 ── */
+function fmtAmt(n){
+  if(n >= 10000000) return (n/10000000).toFixed(0)+'천만원';
+  if(n >= 1000000)  return (n/10000).toFixed(0)+'만원';
+  if(n >= 10000)    return (n/10000).toFixed(1)+'만원';
+  return n.toLocaleString()+'원';
+}
+
+/* ── 수당 탭 표시 ── */
+function renderCompPage(){
+  const isAdmin = CURRENT_USER?.role === 'admin';
+  document.getElementById('comp-member-view').style.display = isAdmin ? 'none' : '';
+  document.getElementById('comp-admin-view').style.display  = isAdmin ? '' : 'none';
+  if(isAdmin) renderAdminComp();
+  else        renderMyComp();
+}
+
+/* ══════════════════════════════════════════
+   회원용: 나의 수당 현황
+══════════════════════════════════════════ */
+function renderMyComp(){
+  const uid = CURRENT_USER?.id;
+  const myComps = ALL_COMPS.filter(c => c.member_id === uid);
+
+  const m1 = myComps.filter(c => c.type === 'model1');
+  const m2 = myComps.filter(c => c.type === 'model2');
+  const m3 = myComps.filter(c => c.type === 'model3');
+
+  const sumAmt = arr => arr.filter(c=>c.status!=='cancelled').reduce((s,c)=>s+c.amount,0);
+
+  /* 요약 */
+  document.getElementById('my-m1-total').textContent = fmtAmt(sumAmt(m1));
+  document.getElementById('my-m2-total').textContent = fmtAmt(sumAmt(m2));
+  document.getElementById('my-m3-total').textContent = fmtAmt(sumAmt(m3));
+  document.getElementById('my-m1-cnt').textContent = m1.length + '건';
+  document.getElementById('my-m2-cnt').textContent = m2.length + '건';
+  document.getElementById('my-m3-cnt').textContent = m3.length + '건';
+
+  /* 목록 렌더 */
+  renderCompList('my-comp-m1-list', m1, '#5A1FA0', '#EDE0FF');
+  renderCompList('my-comp-m2-list', m2, '#A07810', '#FFF8DC');
+  renderCompList('my-comp-m3-list', m3, '#2E7D32', '#E8F5E9');
+}
+
+function renderCompList(elId, items, iconColor, iconBg){
+  const el = document.getElementById(elId);
+  if(!el) return;
+  if(!items.length){ el.innerHTML='<div class="act-empty-box">내역이 없습니다</div>'; return; }
+  el.innerHTML = items.map(c => {
+    const statusLabel = {pending:'대기중', paid:'지급완료', cancelled:'취소'};
+    const statusClass = {pending:'cs-pending', paid:'cs-paid', cancelled:'cs-cancelled'};
+    return `<div class="comp-item">
+      <div class="comp-item-icon" style="background:${iconBg};color:${iconColor};">💰</div>
+      <div class="comp-item-info">
+        <div class="comp-item-title">${c.note || typeLabel(c.type)}</div>
+        <div class="comp-item-sub">${c.month || ''} ${c.paid_date ? '· 지급일: '+c.paid_date : ''}</div>
+      </div>
+      <div class="comp-item-right">
+        <div class="comp-item-amount" style="color:${iconColor};">${fmtAmt(c.amount)}</div>
+        <span class="comp-item-status ${statusClass[c.status]||'cs-pending'}">${statusLabel[c.status]||'대기'}</span>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function typeLabel(t){
+  return {model1:'구독 수당', model2:'멘토 양성 수당', model3:'성과 분배금'}[t] || t;
+}
+
+/* ══════════════════════════════════════════
+   관리자용: 전체 수당 관리
+══════════════════════════════════════════ */
+function renderAdminComp(){
+  /* 통계 요약 */
+  const pending = ALL_COMPS.filter(c=>c.status==='pending').reduce((s,c)=>s+c.amount,0);
+  const paid    = ALL_COMPS.filter(c=>c.status==='paid').reduce((s,c)=>s+c.amount,0);
+  const total   = ALL_COMPS.filter(c=>c.status!=='cancelled').reduce((s,c)=>s+c.amount,0);
+  document.getElementById('adm-total-pending').textContent = fmtAmt(pending);
+  document.getElementById('adm-total-paid').textContent    = fmtAmt(paid);
+  document.getElementById('adm-total-all').textContent     = fmtAmt(total);
+
+  /* 이번달 성과 순위 */
+  renderPerfRank();
+
+  /* 수당 목록 */
+  renderAdminCompList();
+
+  /* 수령회원 드롭다운 갱신 */
+  syncCompMemberSelect();
+
+  /* 이번달 기본값 */
+  const today = new Date();
+  const monthStr = today.getFullYear()+'-'+String(today.getMonth()+1).padStart(2,'0');
+  const revEl = document.getElementById('rev-month');
+  if(revEl && !revEl.value) revEl.value = monthStr;
+}
+
+function renderAdminCompList(){
+  const el = document.getElementById('adm-comp-list');
+  if(!el) return;
+  const filter = document.getElementById('comp-filter')?.value || '';
+  let items = [...ALL_COMPS];
+  if(filter === 'pending') items = items.filter(c=>c.status==='pending');
+  else if(filter === 'paid') items = items.filter(c=>c.status==='paid');
+  else if(filter) items = items.filter(c=>c.type===filter);
+
+  if(!items.length){ el.innerHTML='<div class="act-empty-box">수당 내역이 없습니다</div>'; return; }
+
+  const colorMap = {model1:'#5A1FA0', model2:'#A07810', model3:'#2E7D32'};
+  const bgMap    = {model1:'#EDE0FF', model2:'#FFF8DC', model3:'#E8F5E9'};
+
+  el.innerHTML = items.map(c => {
+    const m = ALL_MEMBERS[c.member_id];
+    const name = m ? m.name : c.member_id;
+    const statusLabel = {pending:'대기중', paid:'지급완료', cancelled:'취소'};
+    const statusClass = {pending:'cs-pending', paid:'cs-paid', cancelled:'cs-cancelled'};
+    const color = colorMap[c.type] || '#5A1FA0';
+    const bg    = bgMap[c.type]    || '#EDE0FF';
+    return `<div class="comp-item">
+      <div class="comp-item-icon" style="background:${bg};color:${color};">${m?.initial||'?'}</div>
+      <div class="comp-item-info">
+        <div class="comp-item-title">${name} · ${typeLabel(c.type)}</div>
+        <div class="comp-item-sub">${c.month||''} ${c.note ? '· '+c.note : ''}</div>
+      </div>
+      <div class="comp-item-right">
+        <div class="comp-item-amount" style="color:${color};">${fmtAmt(c.amount)}</div>
+        <div style="display:flex;gap:4px;justify-content:flex-end;margin-top:3px;">
+          <span class="comp-item-status ${statusClass[c.status]||'cs-pending'}">${statusLabel[c.status]||'대기'}</span>
+          ${c.status==='pending' ? `<span class="comp-item-status cs-paid" style="cursor:pointer;" onclick="markCompPaid(${c.id})">✓지급</span>` : ''}
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+/* 지급 완료 처리 */
+async function markCompPaid(id){
+  if(!confirm('지급 완료로 처리하시겠습니까?')) return;
+  const today = new Date().toISOString().split('T')[0];
+  const { error } = await supa.from('compensations')
+    .update({ status:'paid', paid_date:today })
+    .eq('id', id);
+  if(error){ dbErr('지급 처리', error); return; }
+  const idx = ALL_COMPS.findIndex(c=>c.id===id);
+  if(idx>-1){ ALL_COMPS[idx].status='paid'; ALL_COMPS[idx].paid_date=today; }
+  renderAdminComp();
+  toast('✅ 지급 완료 처리!');
+}
+
+/* 성과 순위 렌더 */
+function renderPerfRank(){
+  const el = document.getElementById('perf-rank-list');
+  if(!el) return;
+  const today = new Date();
+  const thisMonth = today.getFullYear()+'-'+String(today.getMonth()+1).padStart(2,'0');
+
+  /* 현재 회원별 자동 점수 계산 */
+  const scores = Object.values(ALL_MEMBERS)
+    .filter(m => m.role !== 'admin')
+    .map(m => {
+      const newSubs   = Object.values(ALL_MEMBERS).filter(x=>x.referrerId===m.id).length;
+      const keptSubs  = newSubs;
+      const onlineCnt = (m.activities?.online||[]).length;
+      const visitCnt  = (m.activities?.visit||[]).length;
+      const seminarCnt= (m.activities?.seminar||[]).length;
+      const mentorCnt = 0;
+      const total = newSubs*10 + keptSubs*3 + Math.min(onlineCnt,4)*5
+                  + Math.min(visitCnt,5)*3 + Math.min(seminarCnt,3)*8 + mentorCnt*50;
+      return { m, total, newSubs, onlineCnt, visitCnt, seminarCnt };
+    })
+    .filter(s => s.total > 0)
+    .sort((a,b) => b.total - a.total);
+
+  if(!scores.length){ el.innerHTML='<div class="act-empty-box">성과 데이터가 없습니다</div>'; return; }
+
+  el.innerHTML = scores.slice(0,10).map((s,i) => {
+    const rank = i+1;
+    const rankClass = rank<=3 ? `rank-${rank}` : 'rank-n';
+    const rankLabel = rank<=3 ? rank : rank;
+    return `<div class="rank-item">
+      <div class="rank-badge ${rankClass}">${rankLabel}</div>
+      <div class="comp-item-icon" style="background:var(--p5);color:var(--p2);width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:.85rem;">${s.m.initial}</div>
+      <div style="flex:1;">
+        <div style="font-size:.82rem;font-weight:700;">${s.m.name}</div>
+        <div style="font-size:.68rem;color:var(--text3);">유치${s.newSubs}명 · 화상${s.onlineCnt} · 방문${s.visitCnt} · 세미나${s.seminarCnt}</div>
+      </div>
+      <div style="font-size:.88rem;font-weight:800;color:var(--p2);">${s.total}점</div>
+    </div>`;
+  }).join('');
+}
+
+/* 월 매출 등록 */
+async function submitRevenue(){
+  const month  = document.getElementById('rev-month')?.value;
+  const amount = parseInt(document.getElementById('rev-amount')?.value||'0');
+  const resEl  = document.getElementById('rev-result');
+  if(!month || !amount){ if(resEl) resEl.textContent='❌ 월과 매출을 입력하세요.'; return; }
+
+  const pool = Math.floor(amount * 0.1);
+  const { error } = await supa.from('monthly_revenue')
+    .upsert({ month, revenue:amount, pool_amount:pool }, { onConflict:'month' });
+  if(error){ dbErr('매출 등록', error); return; }
+
+  const idx = ALL_REVENUE.findIndex(r=>r.month===month);
+  if(idx>-1) ALL_REVENUE[idx] = { month, revenue:amount, pool_amount:pool };
+  else ALL_REVENUE.unshift({ month, revenue:amount, pool_amount:pool });
+
+  if(resEl) resEl.innerHTML = `✅ 등록 완료! <strong>${month}</strong> 매출 ${fmtAmt(amount)} → 분배 풀 <strong style="color:#2E7D32;">${fmtAmt(pool)}</strong>`;
+  document.getElementById('rev-amount').value = '';
+  toast('✅ 매출 등록 완료!');
+}
+
+/* ══════════════════════════════════════════
+   수당 지급 시트
+══════════════════════════════════════════ */
+function syncCompMemberSelect(){
+  const sel = document.getElementById('cp-member');
+  if(!sel) return;
+  const members = Object.values(ALL_MEMBERS).filter(m=>m.role!=='admin');
+  sel.innerHTML = '<option value="">— 회원 선택 —</option>' +
+    members.map(m=>`<option value="${m.id}">${m.name} (${m.contact||m.id})</option>`).join('');
+}
+
+function selectCompType(type){
+  _curCompType = type;
+  ['model1','model2','model3'].forEach(t => {
+    const btn = document.getElementById('cptype-'+t);
+    const guide = document.getElementById('cp-guide-'+t);
+    const extra1 = document.getElementById('cp-m1-extra');
+    const extra2 = document.getElementById('cp-m2-extra');
+    if(btn) btn.className = 'comp-type-btn' + (t===type ? ` sel-m${type.slice(-1)}` : '');
+    if(guide) guide.style.display = t===type ? '' : 'none';
+    if(extra1) extra1.style.display = type==='model1' ? '' : 'none';
+    if(extra2) extra2.style.display = type==='model2' ? '' : 'none';
+  });
+  /* 모델1: 기본 금액 세팅 */
+  if(type==='model1'){
+    const amtEl = document.getElementById('cp-amount');
+    if(amtEl) amtEl.value = 90000;
+  }
+}
+
+function calcM1Amount(){
+  const cnt = parseInt(document.getElementById('cp-sub-cnt')?.value||'0');
+  const amtEl = document.getElementById('cp-amount');
+  if(amtEl && cnt>0) amtEl.value = cnt * 90000;
+}
+
+function calcM2Amount(){
+  const grade = document.getElementById('cp-grade')?.value;
+  const cnt   = parseInt(document.getElementById('cp-mentor-cnt')?.value||'0');
+  const unitMap = { bronze:8000000, silver:10000000, gold:12000000 };
+  const amtEl = document.getElementById('cp-amount');
+  if(amtEl && grade && cnt>0) amtEl.value = (unitMap[grade]||0) * cnt;
+}
+
+async function submitCompPay(){
+  const errEl   = document.getElementById('comp-pay-err');
+  const memberId= document.getElementById('cp-member')?.value;
+  const amount  = parseInt(document.getElementById('cp-amount')?.value||'0');
+  const month   = document.getElementById('cp-month')?.value;
+  const note    = document.getElementById('cp-note')?.value?.trim()||'';
+  const status  = document.getElementById('cp-status')?.value||'pending';
+
+  if(!memberId){ errEl.textContent='❌ 수령 회원을 선택하세요.'; errEl.style.display='block'; return; }
+  if(!_curCompType){ errEl.textContent='❌ 수익 모델을 선택하세요.'; errEl.style.display='block'; return; }
+  if(!amount||amount<=0){ errEl.textContent='❌ 금액을 입력하세요.'; errEl.style.display='block'; return; }
+  if(!month){ errEl.textContent='❌ 정산 월을 선택하세요.'; errEl.style.display='block'; return; }
+  errEl.style.display='none';
+
+  const today = new Date().toISOString().split('T')[0];
+  const { data:newComp, error } = await supa.from('compensations').insert({
+    member_id: memberId,
+    type:      _curCompType,
+    amount,
+    status,
+    note,
+    month,
+    paid_date: status==='paid' ? today : null
+  }).select().single();
+  if(error){ dbErr('수당 등록', error); return; }
+
+  ALL_COMPS.unshift(newComp);
+  closeSheet('comp-pay');
+  renderAdminComp();
+
+  const m = ALL_MEMBERS[memberId];
+  toast('💰 '+m?.name+' 님 '+fmtAmt(amount)+' 수당 등록 완료!');
+
+  /* 입력 초기화 */
+  _curCompType = '';
+  ['model1','model2','model3'].forEach(t=>{
+    const btn = document.getElementById('cptype-'+t);
+    if(btn) btn.className='comp-type-btn';
+  });
+  document.getElementById('cp-member').value='';
+  document.getElementById('cp-amount').value='';
+  document.getElementById('cp-note').value='';
+  const allGuides = ['cp-guide-model1','cp-guide-model2','cp-guide-model3','cp-m1-extra','cp-m2-extra'];
+  allGuides.forEach(id=>{ const e=document.getElementById(id); if(e) e.style.display='none'; });
+}
+
 </script>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@700;800&family=Noto+Sans+KR:wght@400;500;600;700&display=swap');
@@ -1342,6 +1682,93 @@ body.mode-desktop .sub-stat-card { max-width:640px; }
   50%{ background:rgba(212,168,32,.8); transform:translateY(-4px); }
 }
 
+
+/* ═══════════════════════════════════════════════════
+   💰 보상플랜 시스템 CSS
+═══════════════════════════════════════════════════ */
+/* 수익 모델 카드 */
+.comp-model-card{
+  border-radius:14px; margin:0 14px 12px; overflow:hidden;
+  border:1px solid var(--border); box-shadow:0 2px 8px rgba(90,31,160,.06);
+}
+.comp-model-head{
+  padding:14px 16px; display:flex; align-items:center;
+  justify-content:space-between;
+}
+.comp-model-title{
+  font-size:.9rem; font-weight:800; display:flex; align-items:center; gap:8px;
+}
+.comp-model-total{
+  font-size:.82rem; font-weight:800; padding:4px 12px;
+  border-radius:10px; background:rgba(255,255,255,.25);
+}
+/* 모델별 색상 */
+.comp-m1 .comp-model-head{ background:linear-gradient(120deg,#5A1FA0,#7B3FC0); color:#fff; }
+.comp-m2 .comp-model-head{ background:linear-gradient(120deg,#A07810,#D4A820); color:#fff; }
+.comp-m3 .comp-model-head{ background:linear-gradient(120deg,#1B5E20,#2E7D32); color:#fff; }
+
+.comp-item{
+  padding:12px 16px; border-bottom:1px solid var(--border);
+  display:flex; align-items:center; gap:10px;
+}
+.comp-item:last-child{ border-bottom:none; }
+.comp-item-icon{
+  width:36px; height:36px; border-radius:50%;
+  display:flex; align-items:center; justify-content:center;
+  font-size:1rem; flex-shrink:0;
+}
+.comp-item-info{ flex:1; min-width:0; }
+.comp-item-title{ font-size:.82rem; font-weight:700; color:var(--text); }
+.comp-item-sub  { font-size:.7rem; color:var(--text3); margin-top:2px; }
+.comp-item-right{ text-align:right; flex-shrink:0; }
+.comp-item-amount{ font-size:.88rem; font-weight:800; }
+.comp-item-status{
+  font-size:.65rem; font-weight:700; padding:2px 8px;
+  border-radius:6px; margin-top:3px; display:inline-block;
+}
+.cs-pending { background:rgba(245,124,0,.1); color:#E65100; }
+.cs-paid    { background:rgba(46,125,50,.1);  color:#1B5E20; }
+.cs-cancelled{ background:rgba(211,47,47,.1); color:#B71C1C; }
+
+/* 수당 지급 시트 */
+.comp-type-btn{
+  flex:1; padding:10px 6px; border-radius:10px;
+  border:2px solid var(--border); background:var(--card);
+  font-size:.75rem; font-weight:700; cursor:pointer; text-align:center;
+  transition:all .15s; font-family:'Noto Sans KR',sans-serif; line-height:1.4;
+}
+.comp-type-btn.sel-m1{ border-color:#5A1FA0; background:#EDE0FF; color:#3A0D72; }
+.comp-type-btn.sel-m2{ border-color:#D4A820; background:#FFF8DC; color:#7a5900; }
+.comp-type-btn.sel-m3{ border-color:#2E7D32; background:#E8F5E9; color:#1B5E20; }
+
+/* 관리자 수당 현황 */
+.pay-summary-grid{
+  display:grid; grid-template-columns:repeat(3,1fr);
+  gap:8px; padding:0 14px 14px;
+}
+.pay-summary-card{
+  border-radius:12px; padding:12px 8px; text-align:center;
+  border:1px solid var(--border);
+}
+.pay-summary-n{ font-size:1.2rem; font-weight:800; }
+.pay-summary-l{ font-size:.62rem; color:var(--text3); margin-top:2px; }
+
+/* 수당 순위 */
+.rank-item{
+  padding:11px 14px; border-bottom:1px solid var(--border);
+  display:flex; align-items:center; gap:10px;
+}
+.rank-item:last-child{ border-bottom:none; }
+.rank-badge{
+  width:28px; height:28px; border-radius:50%;
+  display:flex; align-items:center; justify-content:center;
+  font-size:.78rem; font-weight:800; flex-shrink:0;
+}
+.rank-1{ background:#FFD700; color:#5a3a00; }
+.rank-2{ background:#C0C0C0; color:#333; }
+.rank-3{ background:#CD7F32; color:#fff; }
+.rank-n{ background:var(--p5); color:var(--p2); }
+
 </style>
 </head>
 <body>
@@ -1474,6 +1901,9 @@ body.mode-desktop .sub-stat-card { max-width:640px; }
     </div>
     <div class="sb-item" id="sb-activity-wrap" onclick="showTab('activity')">
       <span class="sb-icon">📋</span><span id="sb-activity">활동기록·리포트</span>
+    </div>
+    <div class="sb-item" id="sb-comp-wrap" onclick="showTab('comp')">
+      <span class="sb-icon">💰</span><span id="sb-comp">수당 관리</span>
     </div>
     <div class="sb-item" id="sb-rating-wrap" onclick="showTab('rating')" style="display:none;">
       <span class="sb-icon">⭐</span><span id="sb-rating">만족도 평가</span>
@@ -1681,6 +2111,207 @@ body.mode-desktop .sub-stat-card { max-width:640px; }
       </div>
     </div>
 
+
+    <!-- ▶ 보상플랜 (회원용: 내 수당 현황 / 관리자용: 전체 관리) -->
+    <div class="page" id="page-comp">
+
+      <!-- 회원용 -->
+      <div id="comp-member-view">
+        <div class="page-header">
+          <div><h2>💰 나의 수당 현황</h2><p>보상플랜 수익 내역</p></div>
+        </div>
+
+        <!-- 수익 요약 -->
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;padding:0 14px 14px;">
+          <div class="pay-summary-card" style="background:linear-gradient(135deg,#EDE0FF,#fff);">
+            <div class="pay-summary-n" style="color:#5A1FA0;" id="my-m1-total">0원</div>
+            <div class="pay-summary-l">구독 수당</div>
+          </div>
+          <div class="pay-summary-card" style="background:linear-gradient(135deg,#FFF8DC,#fff);">
+            <div class="pay-summary-n" style="color:#A07810;" id="my-m2-total">0원</div>
+            <div class="pay-summary-l">멘토 수당</div>
+          </div>
+          <div class="pay-summary-card" style="background:linear-gradient(135deg,#E8F5E9,#fff);">
+            <div class="pay-summary-n" style="color:#2E7D32;" id="my-m3-total">0원</div>
+            <div class="pay-summary-l">분배금</div>
+          </div>
+        </div>
+
+        <!-- 모델1 구독 수당 -->
+        <div class="comp-model-card comp-m1">
+          <div class="comp-model-head">
+            <div class="comp-model-title">📋 모델1 — 안정형 구독 수당</div>
+            <div class="comp-model-total" id="my-m1-cnt">0건</div>
+          </div>
+          <div id="my-comp-m1-list"><div class="act-empty-box">수당 내역이 없습니다</div></div>
+        </div>
+
+        <!-- 모델2 멘토 양성 수당 -->
+        <div class="comp-model-card comp-m2">
+          <div class="comp-model-head">
+            <div class="comp-model-title">🌱 모델2 — 성장형 멘토 양성 수당</div>
+            <div class="comp-model-total" id="my-m2-cnt">0건</div>
+          </div>
+          <div id="my-comp-m2-list"><div class="act-empty-box">수당 내역이 없습니다</div></div>
+        </div>
+
+        <!-- 모델3 성과 분배금 -->
+        <div class="comp-model-card comp-m3">
+          <div class="comp-model-head">
+            <div class="comp-model-title">🏆 모델3 — 공유형 성과 분배금</div>
+            <div class="comp-model-total" id="my-m3-cnt">0건</div>
+          </div>
+          <div id="my-comp-m3-list"><div class="act-empty-box">분배금 내역이 없습니다</div></div>
+        </div>
+        <div style="height:20px;"></div>
+      </div>
+
+      <!-- 관리자용 -->
+      <div id="comp-admin-view" style="display:none;">
+        <div class="page-header">
+          <div><h2>💰 수당 관리</h2><p>보상플랜 지급 현황</p></div>
+          <button class="btn-gold" style="padding:8px 14px;border-radius:10px;border:none;font-weight:700;cursor:pointer;font-size:.8rem;font-family:'Noto Sans KR',sans-serif;" onclick="openSheet('comp-pay')">+ 수당 지급</button>
+        </div>
+
+        <!-- 전체 통계 -->
+        <div class="pay-summary-grid">
+          <div class="pay-summary-card" style="background:var(--p5);">
+            <div class="pay-summary-n" style="color:var(--p2);" id="adm-total-pending">0원</div>
+            <div class="pay-summary-l">지급 대기</div>
+          </div>
+          <div class="pay-summary-card" style="background:#E8F5E9;">
+            <div class="pay-summary-n" style="color:#2E7D32;" id="adm-total-paid">0원</div>
+            <div class="pay-summary-l">지급 완료</div>
+          </div>
+          <div class="pay-summary-card" style="background:#FFF8DC;">
+            <div class="pay-summary-n" style="color:#A07810;" id="adm-total-all">0원</div>
+            <div class="pay-summary-l">전체 합계</div>
+          </div>
+        </div>
+
+        <!-- 월 매출 입력 (모델3 계산용) -->
+        <div class="section-title">📊 월 매출 등록 (모델3 분배금 계산)</div>
+        <div class="card" style="margin:0 14px 14px;padding:14px;">
+          <div style="display:flex;gap:8px;align-items:flex-end;">
+            <div style="flex:1;">
+              <label class="form-label">정산 월</label>
+              <input class="form-input" type="month" id="rev-month">
+            </div>
+            <div style="flex:1;">
+              <label class="form-label">월 매출 (원)</label>
+              <input class="form-input" type="number" id="rev-amount" placeholder="예) 10000000">
+            </div>
+            <button class="btn-gold" style="padding:10px 14px;border-radius:10px;border:none;font-weight:700;cursor:pointer;font-size:.8rem;white-space:nowrap;font-family:'Noto Sans KR',sans-serif;margin-bottom:1px;" onclick="submitRevenue()">등록</button>
+          </div>
+          <div id="rev-result" style="margin-top:10px;font-size:.78rem;color:var(--text3);"></div>
+        </div>
+
+        <!-- 성과 순위 -->
+        <div class="section-title">🏆 이번 달 성과 순위</div>
+        <div class="card" id="perf-rank-list" style="margin:0 14px 14px;padding:0;overflow:hidden;">
+          <div class="act-empty-box">성과 데이터가 없습니다</div>
+        </div>
+
+        <!-- 전체 수당 내역 -->
+        <div class="section-title" style="display:flex;align-items:center;justify-content:space-between;padding-right:14px;">
+          <span>💳 전체 수당 내역</span>
+          <select id="comp-filter" onchange="renderAdminCompList()" style="font-size:.72rem;padding:3px 8px;border-radius:6px;border:1px solid var(--border);background:var(--card);font-family:'Noto Sans KR',sans-serif;">
+            <option value="">전체</option>
+            <option value="pending">대기중</option>
+            <option value="paid">지급완료</option>
+            <option value="model1">모델1</option>
+            <option value="model2">모델2</option>
+            <option value="model3">모델3</option>
+          </select>
+        </div>
+        <div class="card" id="adm-comp-list" style="margin:0 14px 20px;padding:0;overflow:hidden;">
+          <div class="act-empty-box">수당 내역이 없습니다</div>
+        </div>
+      </div>
+    </div>
+
+
+    <!-- 수당 지급 시트 -->
+    <div class="sheet" id="sheet-comp-pay">
+      <div class="sheet-handle"></div>
+      <div class="sheet-header">
+        <span class="sheet-title">💰 수당 지급 등록</span>
+        <span class="sheet-close" onclick="closeSheet('comp-pay')">✕</span>
+      </div>
+      <div class="sheet-body">
+        <div id="comp-pay-err" class="form-error" style="display:none;"></div>
+
+        <!-- 수령 회원 -->
+        <label class="form-label">수령 회원</label>
+        <select class="form-input" id="cp-member">
+          <option value="">— 회원 선택 —</option>
+        </select>
+
+        <!-- 수익 모델 선택 -->
+        <label class="form-label" style="margin-top:14px;">수익 모델</label>
+        <div style="display:flex;gap:8px;margin-bottom:14px;">
+          <button class="comp-type-btn" id="cptype-model1" onclick="selectCompType('model1')">📋 모델1<br>구독수당</button>
+          <button class="comp-type-btn" id="cptype-model2" onclick="selectCompType('model2')">🌱 모델2<br>멘토양성</button>
+          <button class="comp-type-btn" id="cptype-model3" onclick="selectCompType('model3')">🏆 모델3<br>분배금</button>
+        </div>
+
+        <!-- 모델별 안내 -->
+        <div id="cp-guide-model1" style="display:none;background:#EDE0FF;border-radius:10px;padding:10px 12px;margin-bottom:12px;font-size:.75rem;color:#3A0D72;line-height:1.6;">
+          구독회원 1인 유치 시 <strong>월 9만원</strong> 지급<br>
+          유치 회원 수 입력 또는 금액 직접 입력
+        </div>
+        <div id="cp-guide-model2" style="display:none;background:#FFF8DC;border-radius:10px;padding:10px 12px;margin-bottom:12px;font-size:.75rem;color:#7a5900;line-height:1.6;">
+          멘토 양성 완료 시 <strong>800~1,200만원</strong> 일시 지급<br>
+          Bronze(800만) / Silver(1,000만) / Gold(1,200만)
+        </div>
+        <div id="cp-guide-model3" style="display:none;background:#E8F5E9;border-radius:10px;padding:10px 12px;margin-bottom:12px;font-size:.75rem;color:#1B5E20;line-height:1.6;">
+          전체 매출 10% 기반 성과 순위 공동 분배금<br>
+          월 매출 등록 후 순위에 따라 자동 계산
+        </div>
+
+        <!-- 모델1 전용: 유치 회원 수 -->
+        <div id="cp-m1-extra" style="display:none;">
+          <label class="form-label">유치 구독회원 수</label>
+          <input class="form-input" type="number" id="cp-sub-cnt" placeholder="예) 5" min="1" oninput="calcM1Amount()">
+          <div style="font-size:.72rem;color:var(--text3);margin-top:4px;">× 90,000원 = 자동 계산</div>
+        </div>
+
+        <!-- 모델2 전용: 등급 선택 -->
+        <div id="cp-m2-extra" style="display:none;">
+          <label class="form-label">양성 등급</label>
+          <select class="form-input" id="cp-grade" onchange="calcM2Amount()">
+            <option value="">— 등급 선택 —</option>
+            <option value="bronze">Bronze — 800만원 (1인 양성)</option>
+            <option value="silver">Silver — 1,000만원/인 (3인 이상)</option>
+            <option value="gold">Gold — 1,200만원/인 (5인 이상)</option>
+          </select>
+          <label class="form-label" style="margin-top:10px;">양성 인원 수</label>
+          <input class="form-input" type="number" id="cp-mentor-cnt" placeholder="예) 3" min="1" oninput="calcM2Amount()">
+        </div>
+
+        <!-- 금액 -->
+        <label class="form-label" style="margin-top:10px;">지급 금액 (원)</label>
+        <input class="form-input" type="number" id="cp-amount" placeholder="예) 90000">
+
+        <!-- 정산 월 -->
+        <label class="form-label" style="margin-top:10px;">정산 월</label>
+        <input class="form-input" type="month" id="cp-month">
+
+        <!-- 비고 -->
+        <label class="form-label" style="margin-top:10px;">비고 (선택)</label>
+        <input class="form-input" id="cp-note" placeholder="예) 홍길동 회원 유치 수당">
+
+        <!-- 지급 상태 -->
+        <label class="form-label" style="margin-top:10px;">지급 상태</label>
+        <select class="form-input" id="cp-status">
+          <option value="pending">대기중 (미지급)</option>
+          <option value="paid">지급 완료</option>
+        </select>
+
+        <button class="btn-full btn-purple" style="margin-top:18px;" onclick="submitCompPay()">💰 수당 등록</button>
+      </div>
+    </div>
+
   </div><!-- /body-wrap -->
 
   <!-- 탭바 -->
@@ -1688,6 +2319,7 @@ body.mode-desktop .sub-stat-card { max-width:640px; }
     <div class="tab-item active" id="tab-home" onclick="showTab('home')"><span class="tab-icon">🏠</span><span class="tab-label">홈</span></div>
     <div class="tab-item" id="tab-members" onclick="showTab('members')"><span class="tab-icon">👥</span><span class="tab-label">회원</span></div>
     <div class="tab-item" id="tab-activity" onclick="showTab('activity')"><span class="tab-icon">📋</span><span class="tab-label" id="tab-act-label">활동</span></div>
+    <div class="tab-item" id="tab-comp" onclick="showTab('comp')"><span class="tab-icon">💰</span><span class="tab-label">수당</span></div>
     <div class="tab-item" id="tab-rating" onclick="showTab('rating')" style="display:none;"><span class="tab-icon">⭐</span><span class="tab-label">평가</span></div>
     <div class="tab-item" id="tab-stock" onclick="showTab('stock')" style="display:none;"><span class="tab-icon">📦</span><span class="tab-label">재고</span></div>
     <div class="tab-item" id="tab-alerts" onclick="showTab('alerts')"><span class="tab-icon">🔔</span><span class="tab-label">알림</span><span class="tab-badge" id="alert-badge" style="display:none;"></span></div>
@@ -2366,6 +2998,8 @@ async function loadAllDataFromDB(){
       if(m) m.ratings.push({ id:row.id, level:row.level, reason:row.reason||'', date:row.date });
     });
 
+    setTxt('보상플랜 로드 중...');
+    try { await loadCompData(); } catch(e){ console.warn('보상플랜 로드 스킵'); }
     setTxt('완료!');
     console.log('✅ 전체 DB 로드 완료');
 
@@ -2485,6 +3119,9 @@ function initApp(){
   // 사이드바 재고탭
   const _sbSt=document.getElementById('sb-stock-wrap');
   if(_sbSt) _sbSt.style.display=isAdmin?'':'none';
+  // 사이드바 수당 라벨
+  const _sbComp=document.getElementById('sb-comp');
+  if(_sbComp) _sbComp.textContent = isAdmin?'수당 관리':'나의 수당';
 
   // KPI
   renderKPI(u, isAdmin);
@@ -2927,6 +3564,7 @@ function showTab(id){
     const m = ensureMemberData(CURRENT_USER?.id);
     if(m) renderMyRatingHist(m.ratings);
   }
+  if(id==='comp'){ renderCompPage(); }
 }
 function refreshStockKPI(){
   if(typeof STOCK_DATA==='undefined') return;
