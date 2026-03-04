@@ -408,6 +408,194 @@ async function submitCompPay(){
   allGuides.forEach(id=>{ const e=document.getElementById(id); if(e) e.style.display='none'; });
 }
 
+
+/* ════════════════════════════════════════════════════════
+   👥 구독회원 관리 시스템 JavaScript
+════════════════════════════════════════════════════════ */
+
+let _memFilter = 'all';   // 현재 필터
+let _curMemId  = null;    // 상세 패널 현재 회원
+
+/* ── 필터 설정 ── */
+function setMemFilter(filter, el){
+  _memFilter = filter;
+  document.querySelectorAll('.mem-ftab').forEach(t=>t.classList.remove('active'));
+  if(el) el.classList.add('active');
+  renderAdminMemberList();
+}
+
+/* ── 회원 목록 렌더 (관리자용) ── */
+function renderAdminMemberList(){
+  const el = document.getElementById('admin-member-list');
+  if(!el) return;
+
+  const sort    = document.getElementById('mem-sort')?.value || 'name';
+  const search  = (document.getElementById('member-search')?.value || '').toLowerCase();
+
+  /* 전체 회원 (admin 제외) */
+  let members = Object.values(ALL_MEMBERS).filter(m => m.role !== 'admin');
+
+  /* 통계 업데이트 */
+  const total    = members.length;
+  const active   = members.filter(m=>m.status==='active' && !['d0','d7'].includes(m.ddayClass)).length;
+  const expiring = members.filter(m=>['d0','d7'].includes(m.ddayClass)).length;
+  const expired  = members.filter(m=>m.status==='expired').length;
+  const setStat = (id,v) => { const e=document.getElementById(id); if(e) e.textContent=v; };
+  setStat('mst-total',    total);
+  setStat('mst-active',   active);
+  setStat('mst-expiring', expiring);
+  setStat('mst-expired',  expired);
+
+  /* 필터 적용 */
+  if(_memFilter === 'active')   members = members.filter(m=>m.status==='active' && !['d0','d7'].includes(m.ddayClass));
+  if(_memFilter === 'expiring') members = members.filter(m=>['d0','d7'].includes(m.ddayClass));
+  if(_memFilter === 'expired')  members = members.filter(m=>m.status==='expired');
+  if(_memFilter === 'root')     members = members.filter(m=>!m.referrerId);
+
+  /* 검색 */
+  if(search) members = members.filter(m=>
+    m.name.toLowerCase().includes(search) ||
+    (m.contact||'').toLowerCase().includes(search) ||
+    (m.id||'').toLowerCase().includes(search)
+  );
+
+  /* 정렬 */
+  if(sort==='name')   members.sort((a,b)=>a.name.localeCompare(b.name));
+  if(sort==='date')   members.sort((a,b)=>(a.startDate||'').localeCompare(b.startDate||''));
+  if(sort==='expire') members.sort((a,b)=>(a.endDate||'').localeCompare(b.endDate||''));
+  if(sort==='depth')  members.sort((a,b)=>(a.depth||0)-(b.depth||0));
+
+  /* 카운트 표시 */
+  const cntEl = document.getElementById('mem-count-label');
+  if(cntEl) cntEl.textContent = members.length + '명';
+
+  if(!members.length){
+    el.innerHTML = '<div class="act-empty-box">해당하는 회원이 없습니다</div>';
+    return;
+  }
+
+  el.innerHTML = members.map(m => {
+    const refName = m.referrerId ? (ALL_MEMBERS[m.referrerId]?.name || m.referrerId) : 'ROOT';
+    const directCnt = Object.values(ALL_MEMBERS).filter(x=>x.referrerId===m.id).length;
+    const compTotal = ALL_COMPS.filter(c=>c.member_id===m.id && c.status!=='cancelled')
+                               .reduce((s,c)=>s+c.amount,0);
+
+    /* 상태 배지 */
+    let statusBadge = '';
+    if(['d0','d7'].includes(m.ddayClass))
+      statusBadge = `<span style="font-size:.6rem;background:#FFEBEE;color:#C62828;padding:1px 6px;border-radius:5px;font-weight:700;">⏰ 만료임박</span>`;
+    else if(m.status==='expired')
+      statusBadge = `<span style="font-size:.6rem;background:#F5F5F5;color:#888;padding:1px 6px;border-radius:5px;font-weight:700;">❌ 만료</span>`;
+    else
+      statusBadge = `<span style="font-size:.6rem;background:#E8F5E9;color:#2E7D32;padding:1px 6px;border-radius:5px;font-weight:700;">✅ 활성</span>`;
+
+    const depthLabel = m.depth===0 ? 'ROOT' : m.depth+'촌';
+
+    return `<div class="mem-card" onclick="openMemDetail('${m.id}')">
+      <div class="m-avatar ${m.avatar}" style="width:40px;height:40px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:1rem;font-weight:800;flex-shrink:0;">${m.initial}</div>
+      <div class="mem-card-info">
+        <div class="mem-card-name">
+          ${m.name}
+          ${statusBadge}
+        </div>
+        <div class="mem-card-sub">📞 ${m.contact||'—'} · 추천인: ${refName} · ${depthLabel}</div>
+        <div class="mem-card-sub">직접추천 ${directCnt}명 ${compTotal>0?'· 수당 '+fmtAmt(compTotal):''}</div>
+      </div>
+      <div class="mem-card-right">
+        <div class="mem-card-dday ${m.ddayClass}">${m.dday}</div>
+        <div class="mem-card-actions">
+          <button class="mem-action-btn btn-link" onclick="event.stopPropagation();showMemberLink('${m.id}')">🔗</button>
+          <button class="mem-action-btn btn-tree" onclick="event.stopPropagation();openTreePanel('${m.id}')">🌳</button>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+/* ── 회원 검색 필터 (관리자) ── */
+function filterAdminMembers(){ renderAdminMemberList(); }
+
+/* ── 회원 검색 필터 (회원용) ── */
+function filterMemberView(){
+  const q = (document.getElementById('member-search-m')?.value||'').toLowerCase();
+  document.querySelectorAll('#member-list-wrap .member-list-item').forEach(el=>{
+    const name = el.getAttribute('data-name')||'';
+    el.style.display = name.toLowerCase().includes(q) ? '' : 'none';
+  });
+}
+
+/* ── 회원 상세 패널 ── */
+function openMemDetail(memberId){
+  _curMemId = memberId;
+  const m = ALL_MEMBERS[memberId];
+  if(!m) return;
+
+  const refName = m.referrerId ? (ALL_MEMBERS[m.referrerId]?.name || m.referrerId) : 'ROOT';
+  const directCnt = Object.values(ALL_MEMBERS).filter(x=>x.referrerId===m.id).length;
+  const totalDesc = Object.values(ALL_MEMBERS).filter(x=>x.id!==m.id && x.role!=='admin').length;
+  const compTotal = ALL_COMPS.filter(c=>c.member_id===m.id && c.status!=='cancelled')
+                             .reduce((s,c)=>s+c.amount,0);
+  const paidComp  = ALL_COMPS.filter(c=>c.member_id===m.id && c.status==='paid')
+                             .reduce((s,c)=>s+c.amount,0);
+
+  /* 아바타 */
+  const avatarEl = document.getElementById('mdet-avatar');
+  if(avatarEl){ avatarEl.textContent=m.initial; avatarEl.className='mem-detail-avatar '+m.avatar; }
+
+  const setVal = (id,v) => { const e=document.getElementById(id); if(e) e.textContent=v; };
+  setVal('mdet-name', m.name);
+  setVal('mdet-sub',  m.depthLabel + ' · ' + (m.status==='active'?'✅ 활성':'❌ 만료'));
+  setVal('mdet-contact', m.contact||'—');
+  setVal('mdet-id',      m.id);
+  setVal('mdet-referrer',refName);
+  setVal('mdet-start',   m.startDate||'—');
+  setVal('mdet-end',     m.endDate||'—');
+  setVal('mdet-direct',  directCnt+'명');
+  setVal('mdet-total',   totalDesc+'명 (전체 하위)');
+  setVal('mdet-comp',    compTotal>0 ? fmtAmt(compTotal)+' (지급완료: '+fmtAmt(paidComp)+')' : '없음');
+
+  document.getElementById('mem-detail-overlay').classList.add('show');
+  document.getElementById('mem-detail-panel').classList.add('show');
+}
+
+function closeMemDetail(){
+  document.getElementById('mem-detail-overlay').classList.remove('show');
+  document.getElementById('mem-detail-panel').classList.remove('show');
+}
+
+function memDetailAction(action){
+  if(!_curMemId) return;
+  closeMemDetail();
+  if(action==='link')  { setTimeout(()=>showMemberLink(_curMemId), 200); }
+  if(action==='tree')  { setTimeout(()=>openTreePanel(_curMemId), 200); }
+  if(action==='comp')  { setTimeout(()=>{ showTab('comp'); setTimeout(()=>{ openSheet('comp-pay'); setTimeout(()=>{ const sel=document.getElementById('cp-member'); if(sel) sel.value=_curMemId; },150); },200); },200); }
+  if(action==='renew') { setTimeout(()=>renewMember(_curMemId), 200); }
+}
+
+/* ── 구독 갱신 ── */
+async function renewMember(memberId){
+  const m = ALL_MEMBERS[memberId];
+  if(!m) return;
+  const newEnd = prompt(m.name+' 님의 새 만료일을 입력하세요 (예: 2027-03-04)', m.endDate||'');
+  if(!newEnd) return;
+  const { error } = await supa.from('members').update({ end_date: newEnd }).eq('id', memberId);
+  if(error){ dbErr('구독 갱신', error); return; }
+  ALL_MEMBERS[memberId].endDate = newEnd;
+  renderAdminMemberList();
+  toast('✅ '+m.name+' 님 구독 갱신 완료!');
+}
+
+/* ── members 탭 진입 시 렌더 ── */
+function renderMembersPage(){
+  const isAdmin = CURRENT_USER?.role === 'admin';
+  const adminView  = document.getElementById('mem-admin-view');
+  const memberView = document.getElementById('mem-member-view');
+  if(adminView)  adminView.style.display  = isAdmin ? '' : 'none';
+  if(memberView) memberView.style.display = isAdmin ? 'none' : '';
+  if(isAdmin) renderAdminMemberList();
+  else        renderMemberList(CURRENT_USER, false);
+}
+
 </script>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@700;800&family=Noto+Sans+KR:wght@400;500;600;700&display=swap');
@@ -1810,6 +1998,99 @@ body.mode-desktop .sub-stat-card { max-width:640px; }
 .rank-3{ background:#CD7F32; color:#fff; }
 .rank-n{ background:var(--p5); color:var(--p2); }
 
+
+/* ═══════════════════════════════════════
+   👥 구독회원 관리 페이지 CSS
+═══════════════════════════════════════ */
+.mem-stat-grid{
+  display:grid; grid-template-columns:repeat(4,1fr);
+  gap:8px; padding:0 14px 14px;
+}
+.mem-stat-card{
+  border-radius:12px; padding:12px 6px; text-align:center;
+  border:1px solid var(--border); background:var(--card);
+}
+.mem-stat-n{ font-size:1.3rem; font-weight:800; }
+.mem-stat-l{ font-size:.6rem; color:var(--text3); margin-top:2px; }
+
+/* 필터 탭 */
+.mem-filter-tabs{
+  display:flex; gap:6px; padding:0 14px 12px;
+  overflow-x:auto; scrollbar-width:none;
+}
+.mem-filter-tabs::-webkit-scrollbar{ display:none; }
+.mem-ftab{
+  padding:6px 14px; border-radius:20px; font-size:.72rem;
+  font-weight:700; border:1.5px solid var(--border);
+  background:var(--card); color:var(--text3); cursor:pointer;
+  white-space:nowrap; font-family:'Noto Sans KR',sans-serif;
+  transition:all .15s;
+}
+.mem-ftab.active{ background:var(--p2); color:#fff; border-color:var(--p2); }
+
+/* 회원 카드 */
+.mem-card{
+  padding:13px 14px; border-bottom:1px solid var(--border);
+  display:flex; align-items:center; gap:10px; cursor:pointer;
+  transition:background .12s;
+}
+.mem-card:last-child{ border-bottom:none; }
+.mem-card:active{ background:var(--p5); }
+.mem-card-info{ flex:1; min-width:0; }
+.mem-card-name{
+  font-size:.88rem; font-weight:800; color:var(--text);
+  display:flex; align-items:center; gap:6px;
+}
+.mem-card-sub{ font-size:.7rem; color:var(--text3); margin-top:3px; }
+.mem-card-right{ text-align:right; flex-shrink:0; }
+.mem-card-dday{ font-size:.7rem; font-weight:700; }
+.mem-card-actions{
+  display:flex; gap:5px; margin-top:4px; justify-content:flex-end;
+}
+.mem-action-btn{
+  font-size:.62rem; font-weight:700; padding:3px 8px;
+  border-radius:6px; border:none; cursor:pointer;
+  font-family:'Noto Sans KR',sans-serif;
+}
+.btn-link{ background:#EDE0FF; color:#5A1FA0; }
+.btn-tree{ background:#E8F5E9; color:#2E7D32; }
+.btn-edit{ background:#FFF8DC; color:#A07810; }
+.btn-del { background:#FFEBEE; color:#C62828; }
+
+/* 회원 상세 패널 */
+.mem-detail-overlay{
+  position:fixed; inset:0; background:rgba(0,0,0,.45);
+  z-index:300; opacity:0; pointer-events:none; transition:opacity .25s;
+}
+.mem-detail-overlay.show{ opacity:1; pointer-events:all; }
+.mem-detail-panel{
+  position:fixed; bottom:0; left:0; right:0;
+  background:var(--card); border-radius:20px 20px 0 0;
+  z-index:301; max-height:90vh; overflow-y:auto;
+  transform:translateY(100%); transition:transform .3s cubic-bezier(.32,1,.23,1);
+}
+.mem-detail-panel.show{ transform:translateY(0); }
+.mem-detail-head{
+  padding:18px 16px 12px; border-bottom:1px solid var(--border);
+  display:flex; align-items:center; gap:12px;
+}
+.mem-detail-avatar{
+  width:52px; height:52px; border-radius:50%;
+  display:flex; align-items:center; justify-content:center;
+  font-size:1.3rem; font-weight:800; flex-shrink:0;
+}
+.mem-detail-body{ padding:14px; }
+.mem-info-row{
+  display:flex; padding:10px 0; border-bottom:1px solid var(--border);
+  align-items:center;
+}
+.mem-info-row:last-child{ border-bottom:none; }
+.mem-info-label{ font-size:.72rem; color:var(--text3); width:80px; flex-shrink:0; }
+.mem-info-val{ font-size:.82rem; font-weight:700; color:var(--text); flex:1; }
+.mem-detail-actions{
+  display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:14px;
+}
+
 </style>
 </head>
 <body>
@@ -1992,12 +2273,103 @@ body.mode-desktop .sub-stat-card { max-width:640px; }
 
     <!-- ▶ 구독회원 -->
     <div class="page" id="page-members">
-      <div class="page-header">
-        <div><h2 id="members-title">구독회원 관리</h2><p id="members-desc">이름을 누르면 개인 추천 트리를 볼 수 있어요</p></div>
-        <button class="renew-btn" id="add-member-btn" style="width:auto;padding:0 14px;height:34px;display:none;" onclick="openSheet('add-member')">+ 등록</button>
+
+      <!-- 관리자용 -->
+      <div id="mem-admin-view">
+        <div class="page-header">
+          <div><h2>👥 구독회원 관리</h2><p>전체 회원 현황 및 관리</p></div>
+          <button class="renew-btn" id="add-member-btn" style="width:auto;padding:0 14px;height:34px;display:none;" onclick="openSheet('add-member')">+ 등록</button>
+        </div>
+
+        <!-- 통계 요약 -->
+        <div class="mem-stat-grid">
+          <div class="mem-stat-card" style="background:linear-gradient(135deg,#EDE0FF,#fff);">
+            <div class="mem-stat-n" style="color:#5A1FA0;" id="mst-total">0</div>
+            <div class="mem-stat-l">전체 회원</div>
+          </div>
+          <div class="mem-stat-card" style="background:linear-gradient(135deg,#E8F5E9,#fff);">
+            <div class="mem-stat-n" style="color:#2E7D32;" id="mst-active">0</div>
+            <div class="mem-stat-l">활성 회원</div>
+          </div>
+          <div class="mem-stat-card" style="background:linear-gradient(135deg,#FFEBEE,#fff);">
+            <div class="mem-stat-n" style="color:#C62828;" id="mst-expiring">0</div>
+            <div class="mem-stat-l">만료 임박</div>
+          </div>
+          <div class="mem-stat-card" style="background:linear-gradient(135deg,#FFF8DC,#fff);">
+            <div class="mem-stat-n" style="color:#A07810;" id="mst-expired">0</div>
+            <div class="mem-stat-l">만료 회원</div>
+          </div>
+        </div>
+
+        <!-- 검색 -->
+        <div class="search-box">
+          <span>🔍</span>
+          <input type="text" id="member-search" placeholder="회원명·연락처 검색" oninput="filterAdminMembers()">
+        </div>
+
+        <!-- 필터 탭 -->
+        <div class="mem-filter-tabs">
+          <div class="mem-ftab active" onclick="setMemFilter('all',this)">전체</div>
+          <div class="mem-ftab" onclick="setMemFilter('active',this)">✅ 활성</div>
+          <div class="mem-ftab" onclick="setMemFilter('expiring',this)">⏰ 만료임박</div>
+          <div class="mem-ftab" onclick="setMemFilter('expired',this)">❌ 만료</div>
+          <div class="mem-ftab" onclick="setMemFilter('root',this)">🌳 ROOT</div>
+        </div>
+
+        <!-- 정렬 -->
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:0 14px 8px;">
+          <span style="font-size:.72rem;color:var(--text3);" id="mem-count-label">0명</span>
+          <select id="mem-sort" onchange="renderAdminMemberList()" style="font-size:.72rem;padding:4px 8px;border-radius:8px;border:1px solid var(--border);background:var(--card);font-family:'Noto Sans KR',sans-serif;">
+            <option value="name">이름순</option>
+            <option value="date">등록일순</option>
+            <option value="expire">만료일순</option>
+            <option value="depth">깊이순</option>
+          </select>
+        </div>
+
+        <!-- 회원 목록 -->
+        <div class="card" id="admin-member-list" style="margin:0 14px 20px;padding:0;overflow:hidden;">
+          <div class="act-empty-box">회원이 없습니다</div>
+        </div>
       </div>
-      <div class="search-box"><span>🔍</span><input type="text" id="member-search" placeholder="회원명 검색" oninput="filterMembers()"></div>
-      <div class="card" id="member-list-wrap" style="margin-bottom:14px;"></div>
+
+      <!-- 회원용 (기존) -->
+      <div id="mem-member-view" style="display:none;">
+        <div class="page-header">
+          <div><h2>👥 내 네트워크</h2><p>나와 내 하위 회원 목록</p></div>
+        </div>
+        <div class="search-box"><span>🔍</span><input type="text" id="member-search-m" placeholder="회원명 검색" oninput="filterMemberView()"></div>
+        <div class="card" id="member-list-wrap" style="margin-bottom:14px;"></div>
+      </div>
+    </div>
+
+    <!-- 회원 상세 패널 -->
+    <div class="mem-detail-overlay" id="mem-detail-overlay" onclick="closeMemDetail()"></div>
+    <div class="mem-detail-panel" id="mem-detail-panel">
+      <div class="mem-detail-head">
+        <div class="mem-detail-avatar" id="mdet-avatar">?</div>
+        <div style="flex:1;">
+          <div style="font-size:1rem;font-weight:800;" id="mdet-name">—</div>
+          <div style="font-size:.72rem;color:var(--text3);margin-top:3px;" id="mdet-sub">—</div>
+        </div>
+        <span style="font-size:1.4rem;cursor:pointer;color:var(--text3);" onclick="closeMemDetail()">✕</span>
+      </div>
+      <div class="mem-detail-body">
+        <div class="mem-info-row"><span class="mem-info-label">연락처</span><span class="mem-info-val" id="mdet-contact">—</span></div>
+        <div class="mem-info-row"><span class="mem-info-label">아이디</span><span class="mem-info-val" id="mdet-id">—</span></div>
+        <div class="mem-info-row"><span class="mem-info-label">추천인</span><span class="mem-info-val" id="mdet-referrer">—</span></div>
+        <div class="mem-info-row"><span class="mem-info-label">구독 시작</span><span class="mem-info-val" id="mdet-start">—</span></div>
+        <div class="mem-info-row"><span class="mem-info-label">구독 만료</span><span class="mem-info-val" id="mdet-end">—</span></div>
+        <div class="mem-info-row"><span class="mem-info-label">직접 추천</span><span class="mem-info-val" id="mdet-direct">—</span></div>
+        <div class="mem-info-row"><span class="mem-info-label">전체 하위</span><span class="mem-info-val" id="mdet-total">—</span></div>
+        <div class="mem-info-row"><span class="mem-info-label">구독 수당</span><span class="mem-info-val" id="mdet-comp">—</span></div>
+        <div class="mem-detail-actions">
+          <button class="btn-full" style="background:#EDE0FF;color:#5A1FA0;border:none;border-radius:10px;padding:11px;font-weight:700;cursor:pointer;font-size:.8rem;font-family:'Noto Sans KR',sans-serif;" onclick="memDetailAction('link')">🔗 링크 복사</button>
+          <button class="btn-full" style="background:#E8F5E9;color:#2E7D32;border:none;border-radius:10px;padding:11px;font-weight:700;cursor:pointer;font-size:.8rem;font-family:'Noto Sans KR',sans-serif;" onclick="memDetailAction('tree')">🌳 트리 보기</button>
+          <button class="btn-full" style="background:#FFF8DC;color:#A07810;border:none;border-radius:10px;padding:11px;font-weight:700;cursor:pointer;font-size:.8rem;font-family:'Noto Sans KR',sans-serif;" onclick="memDetailAction('comp')">💰 수당 지급</button>
+          <button class="btn-full" style="background:#FFEBEE;color:#C62828;border:none;border-radius:10px;padding:11px;font-weight:700;cursor:pointer;font-size:.8rem;font-family:'Noto Sans KR',sans-serif;" onclick="memDetailAction('renew')">🔄 구독 갱신</button>
+        </div>
+      </div>
     </div>
 
     <!-- ▶ 재고 (관리자 전용) -->
@@ -3237,7 +3609,7 @@ function initApp(){
   renderKPI(u, isAdmin);
   renderBanners(u, isAdmin);
   renderExpireList(u, isAdmin);
-  renderMemberList(u, isAdmin);
+  renderMembersPage();
   renderAlerts(u, isAdmin);
 
   // 알림 배지 사이드바 동기화
@@ -3675,6 +4047,7 @@ function showTab(id){
     if(m) renderMyRatingHist(m.ratings);
   }
   if(id==='comp'){ renderCompPage(); }
+  if(id==='members'){ renderMembersPage(); }
 }
 function refreshStockKPI(){
   if(typeof STOCK_DATA==='undefined') return;
@@ -3702,7 +4075,7 @@ function toast(msg){ const el=document.getElementById('toast'); el.textContent=m
 function calcRenew(){ const m=parseInt(document.getElementById('renew-months').value); const d=new Date('2025-01-27'); d.setMonth(d.getMonth()+m); document.getElementById('new-end-date').value=d.toISOString().split('T')[0]; }
 
 /* ── 검색 ── */
-function filterMembers(){ const q=document.getElementById('member-search').value.trim().toLowerCase(); document.querySelectorAll('#member-list-wrap .member-list-item').forEach(el=>{ const name=el.getAttribute('data-name')||''; el.style.display=name.toLowerCase().includes(q)?'':'none'; }); }
+function filterMembers(){ filterAdminMembers(); }
 
 /* ── 날짜 ── */
 const _todayInit=new Date().toISOString().split('T')[0];
