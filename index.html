@@ -288,6 +288,47 @@ function syncCompMemberSelect(){
     members.map(m=>`<option value="${m.id}">${m.name} (${m.contact||m.id})</option>`).join('');
 }
 
+/* ── 수당 지급 시트 열릴 때 초기화 ── */
+function initCompPaySheet(){
+  /* 회원 목록 최신화 */
+  syncCompMemberSelect();
+
+  /* 이번달 기본값 */
+  const today = new Date();
+  const monthStr = today.getFullYear()+'-'+String(today.getMonth()+1).padStart(2,'0');
+  const mEl = document.getElementById('cp-month');
+  if(mEl && !mEl.value) mEl.value = monthStr;
+
+  /* 에러 숨김 */
+  const errEl = document.getElementById('comp-pay-err');
+  if(errEl) errEl.style.display='none';
+
+  /* 모델 선택 초기화 */
+  _curCompType = '';
+  ['model1','model2','model3'].forEach(t=>{
+    const btn   = document.getElementById('cptype-'+t);
+    const guide = document.getElementById('cp-guide-'+t);
+    if(btn)   btn.className = 'comp-type-btn';
+    if(guide) guide.style.display = 'none';
+  });
+  const e1=document.getElementById('cp-m1-extra');
+  const e2=document.getElementById('cp-m2-extra');
+  if(e1) e1.style.display='none';
+  if(e2) e2.style.display='none';
+
+  /* 입력값 초기화 */
+  ['cp-amount','cp-note','cp-sub-cnt','cp-mentor-cnt'].forEach(id=>{
+    const el=document.getElementById(id);
+    if(el) el.value='';
+  });
+  const gradeEl=document.getElementById('cp-grade');
+  if(gradeEl) gradeEl.value='';
+  const memberEl=document.getElementById('cp-member');
+  if(memberEl) memberEl.value='';
+  const statusEl=document.getElementById('cp-status');
+  if(statusEl) statusEl.value='pending';
+}
+
 function selectCompType(type){
   _curCompType = type;
   ['model1','model2','model3'].forEach(t => {
@@ -2895,10 +2936,52 @@ function applyLang(){
   } catch(e) {
     console.error('startApp 오류:', e);
   }
-  /* DB 로딩 화면 숨김 → 로그인 화면 표시 */
+
+  /* DB 로딩 화면 숨김 */
   const dbLoading = document.getElementById('db-loading');
   if(dbLoading) dbLoading.style.display = 'none';
-  console.log('✅ 앱 시작 완료 — 로그인 화면 표시');
+  console.log('✅ 앱 시작 완료');
+
+  /* ── URL 파라미터 자동 로그인 (회원 전용 링크) ── */
+  const _params = new URLSearchParams(window.location.search);
+  const _phone  = _params.get('phone');
+  if(_phone){
+    /* URL에서 전화번호 파라미터 감지 → 자동 인증 */
+    const _clean = _phone.replace(/[^0-9]/g,'');
+    /* DB에서 전화번호로 회원 조회 */
+    const { data:_mData, error:_mErr } = await supa
+      .from('members')
+      .select('*')
+      .eq('contact', _clean.replace(/(\d{3})(\d{4})(\d{4})/,'$1-$2-$3'))
+      .neq('role','admin')
+      .single();
+
+    /* 대시 없이도 검색 */
+    let _member = _mData;
+    if(!_member && !_mErr){
+      const { data:_m2 } = await supa
+        .from('members').select('*')
+        .ilike('contact', '%'+_clean.slice(-4))
+        .neq('role','admin');
+      if(_m2 && _m2.length === 1) _member = _m2[0];
+    }
+
+    if(_member){
+      ALL_MEMBERS[_member.id] = dbRowToMember(_member);
+      /* URL 파라미터 제거 (뒤로가기 방지) */
+      window.history.replaceState({}, '', window.location.pathname);
+      loginAs(ALL_MEMBERS[_member.id]);
+      console.log('✅ URL 자동 로그인:', _member.name);
+    } else {
+      console.warn('링크 인증 실패 — 전화번호:', _clean);
+      /* 로그인 화면에 안내 메시지 표시 */
+      const loginErr = document.getElementById('login-error');
+      if(loginErr){
+        loginErr.textContent = '링크가 만료되었거나 등록되지 않은 회원입니다.';
+        loginErr.style.display = 'block';
+      }
+    }
+  }
 
   /* 슬립 방지: 5분마다 DB 핑 */
   setInterval(async () => {
@@ -2956,55 +3039,16 @@ async function loadAllDataFromDB(){
     if(el) el.textContent = t;
   };
 
+  /* ── 회원 로드 ── */
   try {
     setTxt('회원 데이터 로드 중...');
     const { data:mRows, error:mErr } = await supa.from('members').select('*');
-    if(mErr) throw mErr;
+    if(mErr) throw new Error(mErr.message || JSON.stringify(mErr));
     (mRows||[]).forEach(row => { ALL_MEMBERS[row.id] = dbRowToMember(row); });
-    console.log('회원 로드 완료:', (mRows||[]).length + '명');
-
-    setTxt('상품 데이터 로드 중...');
-    const { data:pRows, error:pErr } = await supa.from('products').select('*');
-    if(pErr) throw pErr;
-    (pRows||[]).forEach(row => { STOCK_DATA[row.code] = dbRowToProduct(row); });
-    console.log('상품 로드 완료:', (pRows||[]).length + '개');
-
-    setTxt('입출고 이력 로드 중...');
-    const { data:hRows, error:hErr } = await supa.from('stock_history').select('*').order('created_at',{ascending:false}).limit(200);
-    if(hErr) throw hErr;
-    (hRows||[]).forEach(row => {
-      const p = STOCK_DATA[row.product_code];
-      if(p) p.history.push({ t:row.type, q:row.qty, d:row.date, m:row.memo||'' });
-    });
-
-    setTxt('활동 기록 로드 중...');
-    const { data:aRows, error:aErr } = await supa.from('activities').select('*').order('date',{ascending:false}).limit(500);
-    if(aErr) throw aErr;
-    (aRows||[]).forEach(row => {
-      const m = ALL_MEMBERS[row.member_id];
-      if(m && m.activities?.[row.type]){
-        m.activities[row.type].push({
-          id:row.id, date:row.date, time:row.time||'',
-          place:row.place||'', attend:row.attend||'attend', memo:row.memo||''
-        });
-      }
-    });
-
-    setTxt('평가 데이터 로드 중...');
-    const { data:rRows, error:rErr } = await supa.from('ratings').select('*').order('created_at',{ascending:false}).limit(500);
-    if(rErr) throw rErr;
-    (rRows||[]).forEach(row => {
-      const m = ALL_MEMBERS[row.member_id];
-      if(m) m.ratings.push({ id:row.id, level:row.level, reason:row.reason||'', date:row.date });
-    });
-
-    setTxt('보상플랜 로드 중...');
-    try { await loadCompData(); } catch(e){ console.warn('보상플랜 로드 스킵'); }
-    setTxt('완료!');
-    console.log('✅ 전체 DB 로드 완료');
-
+    console.log('✅ 회원 로드:', (mRows||[]).length + '명');
   } catch(e) {
-    console.error('DB 로드 오류:', e);
+    console.error('회원 로드 오류:', e.message);
+    /* admin 기본값 세팅 */
     if(!ALL_MEMBERS['admin']){
       ALL_MEMBERS['admin'] = {
         id:'admin', pw:'admin123', name:'관리자', role:'admin',
@@ -3016,8 +3060,66 @@ async function loadAllDataFromDB(){
         activities:{online:[],visit:[],seminar:[]}, ratings:[]
       };
     }
-    alert('⚠️ 데이터 로드 실패: ' + e.message);
   }
+
+  /* ── 상품 로드 ── */
+  try {
+    setTxt('상품 데이터 로드 중...');
+    const { data:pRows, error:pErr } = await supa.from('products').select('*');
+    if(pErr) throw new Error(pErr.message || JSON.stringify(pErr));
+    (pRows||[]).forEach(row => { STOCK_DATA[row.code] = dbRowToProduct(row); });
+    console.log('✅ 상품 로드:', (pRows||[]).length + '개');
+  } catch(e) { console.error('상품 로드 오류:', e.message); }
+
+  /* ── 입출고 이력 로드 ── */
+  try {
+    setTxt('입출고 이력 로드 중...');
+    const { data:hRows, error:hErr } = await supa.from('stock_history').select('*').order('created_at',{ascending:false}).limit(200);
+    if(hErr) throw new Error(hErr.message || JSON.stringify(hErr));
+    (hRows||[]).forEach(row => {
+      const p = STOCK_DATA[row.product_code];
+      if(p) p.history.push({ t:row.type, q:row.qty, d:row.date, m:row.memo||'' });
+    });
+    console.log('✅ 입출고 이력 로드:', (hRows||[]).length + '건');
+  } catch(e) { console.error('입출고 로드 오류:', e.message); }
+
+  /* ── 활동 기록 로드 ── */
+  try {
+    setTxt('활동 기록 로드 중...');
+    const { data:aRows, error:aErr } = await supa.from('activities').select('*').order('date',{ascending:false}).limit(500);
+    if(aErr) throw new Error(aErr.message || JSON.stringify(aErr));
+    (aRows||[]).forEach(row => {
+      const m = ALL_MEMBERS[row.member_id];
+      if(m && m.activities?.[row.type]){
+        m.activities[row.type].push({
+          id:row.id, date:row.date, time:row.time||'',
+          place:row.place||'', attend:row.attend||'attend', memo:row.memo||''
+        });
+      }
+    });
+    console.log('✅ 활동 기록 로드:', (aRows||[]).length + '건');
+  } catch(e) { console.error('활동 로드 오류:', e.message); }
+
+  /* ── 평가 데이터 로드 ── */
+  try {
+    setTxt('평가 데이터 로드 중...');
+    const { data:rRows, error:rErr } = await supa.from('ratings').select('*').order('created_at',{ascending:false}).limit(500);
+    if(rErr) throw new Error(rErr.message || JSON.stringify(rErr));
+    (rRows||[]).forEach(row => {
+      const m = ALL_MEMBERS[row.member_id];
+      if(m) m.ratings.push({ id:row.id, level:row.level, reason:row.reason||'', date:row.date });
+    });
+    console.log('✅ 평가 데이터 로드:', (rRows||[]).length + '건');
+  } catch(e) { console.error('평가 로드 오류:', e.message); }
+
+  /* ── 보상플랜 로드 ── */
+  try {
+    setTxt('보상플랜 로드 중...');
+    await loadCompData();
+  } catch(e) { console.warn('보상플랜 로드 스킵:', e.message); }
+
+  setTxt('완료!');
+  console.log('✅ 전체 DB 로드 완료 — 회원:', Object.keys(ALL_MEMBERS).length);
 }
 
 /* ── 하위 회원 계산 ── */
@@ -3723,8 +3825,9 @@ async function submitRegister(){
 
 /* 링크 생성 함수 */
 function generateMemberLink(phone){
-  const base = window.location.href.replace(/\/[^\/]*$\s*/,'').replace(/\?.*$/,'');
-  return base + '/member_auth.html?phone=' + encodeURIComponent(phone.replace(/-/g,''));
+  const base = window.location.origin + window.location.pathname;
+  const clean = base.replace(/\?.*$/, '').replace(/\/+$/, '');
+  return clean + '?phone=' + encodeURIComponent(phone.replace(/-/g,''));
 }
 
 /* 회원 목록에서 링크 보기 */
