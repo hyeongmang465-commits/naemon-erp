@@ -1856,12 +1856,9 @@ body.mode-desktop .sub-stat-card { max-width:640px; }
       <div class="login-error" id="login-error">❌ 아이디 또는 비밀번호가 올바르지 않습니다.</div>
     </div>
 
-    <!-- 데모용 빠른 로그인 -->
+    <!-- 계정 힌트 -->
     <div class="quick-login">
-      <p>— 데모 계정으로 빠른 로그인 —</p>
-      <div class="quick-logins">
-        <div class="ql-btn admin-btn" onclick="quickLogin('admin')">👑 관리자</div>
-      </div>
+      <p style="font-size:.72rem;color:var(--text3);">관리자: admin / admin123</p>
     </div>
   </div>
 </div>
@@ -3179,7 +3176,11 @@ async function doLogin(){
     if(btn){ btn.textContent='로그인'; btn.disabled=false; }
   }
 }
-function quickLogin(id){ loginAs(ALL_MEMBERS[id]); }
+function quickLogin(id){
+  const u = ALL_MEMBERS[id];
+  if(!u){ alert('로그인 정보를 불러오는 중입니다. 잠시 후 다시 시도해 주세요.'); return; }
+  loginAs(u);
+}
 function loginAs(user){
   CURRENT_USER = user;
   document.getElementById('login-screen').style.display='none';
