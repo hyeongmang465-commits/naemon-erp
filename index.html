@@ -596,6 +596,303 @@ function renderMembersPage(){
   else        renderMemberList(CURRENT_USER, false);
 }
 
+
+/* ════════════════════════════════════════════════════════════
+   👥 회원 관리 — 상세 / 수정 / 삭제 / 산하 네트워크
+════════════════════════════════════════════════════════════ */
+let _editAvatar = 'av-purple';
+
+/* ── 회원 상세 패널 열기 ── */
+function openMemDetail(memberId){
+  _curMemId = memberId;
+  const m = ALL_MEMBERS[memberId];
+  if(!m) return;
+
+  const refName   = m.referrerId ? (ALL_MEMBERS[m.referrerId]?.name || m.referrerId) : 'ROOT';
+  const directCnt = Object.values(ALL_MEMBERS).filter(x=>x.referrerId===m.id).length;
+  const compTotal = ALL_COMPS.filter(c=>c.member_id===m.id && c.status!=='cancelled').reduce((s,c)=>s+c.amount,0);
+  const paidComp  = ALL_COMPS.filter(c=>c.member_id===m.id && c.status==='paid').reduce((s,c)=>s+c.amount,0);
+
+  const av = document.getElementById('mdet-avatar');
+  if(av){ av.textContent=m.initial; av.className='mem-detail-avatar '+m.avatar; }
+
+  const sv = (id,v)=>{ const e=document.getElementById(id); if(e) e.textContent=v; };
+  sv('mdet-name',    m.name);
+  sv('mdet-sub',     (m.depthLabel||'') + ' · ' + (m.status==='active'?'✅ 활성':'❌ 만료'));
+  sv('mdet-contact', m.contact||'—');
+  sv('mdet-id',      m.id);
+  sv('mdet-referrer',refName);
+  sv('mdet-start',   m.startDate||'—');
+  sv('mdet-end',     m.endDate||'—');
+  sv('mdet-direct',  directCnt+'명');
+  sv('mdet-comp',    compTotal>0 ? fmtAmt(compTotal)+' (지급: '+fmtAmt(paidComp)+')' : '없음');
+
+  document.getElementById('mem-detail-overlay').classList.add('show');
+  document.getElementById('mem-detail-panel').classList.add('show');
+}
+
+function closeMemDetail(){
+  document.getElementById('mem-detail-overlay')?.classList.remove('show');
+  document.getElementById('mem-detail-panel')?.classList.remove('show');
+}
+
+/* ── 상세 패널 버튼 액션 ── */
+function memDetailAction(action){
+  if(!_curMemId) return;
+  closeMemDetail();
+  setTimeout(()=>{
+    if(action==='link')   showMemberLink(_curMemId);
+    if(action==='tree')   openTreePanel(_curMemId);
+    if(action==='edit')   openEditMember(_curMemId);
+    if(action==='delete') confirmDeleteMember(_curMemId);
+    if(action==='comp'){
+      showTab('comp');
+      setTimeout(()=>{
+        openSheet('comp-pay');
+        setTimeout(()=>{ const s=document.getElementById('cp-member'); if(s) s.value=_curMemId; },150);
+      },200);
+    }
+  }, 200);
+}
+
+/* ══════════════════════════════════════════
+   ✏️ 회원 정보 수정
+══════════════════════════════════════════ */
+function openEditMember(memberId){
+  const m = ALL_MEMBERS[memberId];
+  if(!m) return;
+
+  document.getElementById('edit-member-id').value = memberId;
+  document.getElementById('edit-name').value   = m.name||'';
+  document.getElementById('edit-phone').value  = m.contact||'';
+  document.getElementById('edit-id').value     = m.id||'';
+  document.getElementById('edit-pw').value     = '';
+  document.getElementById('edit-start').value  = m.startDate||'';
+  document.getElementById('edit-end').value    = m.endDate||'';
+  document.getElementById('edit-status').value = m.status||'active';
+  document.getElementById('edit-err').style.display='none';
+
+  /* 추천인 드롭다운 */
+  const sel = document.getElementById('edit-referrer');
+  sel.innerHTML = '<option value="">— 추천인 없음 (ROOT) —</option>' +
+    Object.values(ALL_MEMBERS)
+      .filter(x=>x.role!=='admin' && x.id!==memberId)
+      .map(x=>`<option value="${x.id}" ${x.id===m.referrerId?'selected':''}>${x.name} (${x.contact||x.id})</option>`)
+      .join('');
+
+  /* 아바타 */
+  _editAvatar = m.avatar||'av-purple';
+  document.getElementById('edit-avatar-val').value = _editAvatar;
+  const initial = m.initial||m.name?.charAt(0)||'?';
+  document.querySelectorAll('.avatar-opt').forEach(el=>{
+    el.textContent = initial;
+    el.classList.toggle('selected', el.classList.contains(_editAvatar));
+  });
+
+  openSheet('edit-member');
+}
+
+function selectEditAvatar(cls, el){
+  _editAvatar = cls;
+  document.getElementById('edit-avatar-val').value = cls;
+  document.querySelectorAll('.avatar-opt').forEach(e=>e.classList.remove('selected'));
+  el.classList.add('selected');
+}
+
+async function submitEditMember(){
+  const errEl    = document.getElementById('edit-err');
+  const memberId = document.getElementById('edit-member-id').value;
+  const name     = document.getElementById('edit-name').value.trim();
+  const phone    = document.getElementById('edit-phone').value.trim();
+  const pw       = document.getElementById('edit-pw').value.trim();
+  const start    = document.getElementById('edit-start').value;
+  const end      = document.getElementById('edit-end').value;
+  const refId    = document.getElementById('edit-referrer').value;
+  const status   = document.getElementById('edit-status').value;
+  const avatar   = document.getElementById('edit-avatar-val').value||'av-purple';
+
+  if(!name){  errEl.textContent='❌ 회원명을 입력하세요.'; errEl.style.display='block'; return; }
+  if(!phone){ errEl.textContent='❌ 전화번호를 입력하세요.'; errEl.style.display='block'; return; }
+  if(!start||!end){ errEl.textContent='❌ 구독 기간을 입력하세요.'; errEl.style.display='block'; return; }
+  errEl.style.display='none';
+
+  const m = ALL_MEMBERS[memberId];
+  if(!m) return;
+  const initial = name.charAt(0);
+
+  const updateData = {
+    name, contact:phone, start_date:start, end_date:end,
+    referrer_id:refId||null, status, avatar, initial
+  };
+  if(pw) updateData.pw = pw;
+
+  try {
+    const { error } = await supa.from('members').update(updateData).eq('id', memberId);
+    if(error) throw new Error(error.message);
+
+    /* 메모리 갱신 */
+    ALL_MEMBERS[memberId] = dbRowToMember({
+      id:memberId, pw:pw||m.pw, name, contact:phone,
+      role:m.role||'member', referrer_id:refId||null,
+      start_date:start, end_date:end, status, avatar, initial,
+      depth:m.depth||0, depth_label:m.depthLabel||''
+    });
+
+    closeSheet('edit-member');
+    renderAdminMemberList();
+    toast('✅ ' + name + ' 님 정보 수정 완료!');
+  } catch(e){
+    errEl.textContent = '❌ 오류: ' + e.message;
+    errEl.style.display = 'block';
+  }
+}
+
+/* ══════════════════════════════════════════
+   🗑️ 회원 삭제
+══════════════════════════════════════════ */
+function confirmDeleteMember(memberId){
+  const m = ALL_MEMBERS[memberId];
+  if(!m) return;
+
+  const directCnt = Object.values(ALL_MEMBERS).filter(x=>x.referrerId===memberId).length;
+  let msg = m.name + ' 님을 삭제하시겠습니까?\n\n';
+  if(directCnt>0) msg += '⚠️ 이 회원의 직접 추천 ' + directCnt + '명은 ROOT가 됩니다.\n';
+  msg += '삭제 시 수당·활동기록도 함께 삭제됩니다.';
+
+  if(!confirm(msg)) return;
+  deleteMemberById(memberId);
+}
+
+async function deleteMemberById(memberId){
+  const m = ALL_MEMBERS[memberId];
+  if(!m) return;
+
+  try {
+    /* 하위 회원 추천인 초기화 */
+    const directs = Object.values(ALL_MEMBERS).filter(x=>x.referrerId===memberId);
+    for(const child of directs){
+      await supa.from('members').update({ referrer_id:null }).eq('id', child.id);
+      ALL_MEMBERS[child.id].referrerId = null;
+    }
+
+    /* 삭제 */
+    const { error } = await supa.from('members').delete().eq('id', memberId);
+    if(error) throw new Error(error.message);
+
+    delete ALL_MEMBERS[memberId];
+    renderAdminMemberList();
+    toast('🗑️ ' + m.name + ' 님 삭제 완료');
+  } catch(e){
+    alert('❌ 삭제 오류: ' + e.message);
+  }
+}
+
+/* ══════════════════════════════════════════
+   🌳 회원 산하 네트워크 렌더
+══════════════════════════════════════════ */
+function renderMyNetwork(){
+  const uid = CURRENT_USER?.id;
+  if(!uid) return;
+
+  const directs   = getDirectChildren(uid);
+  const allDesc   = getAllDescendants(uid);
+  const indirects = allDesc.filter(m=>m.referrerId!==uid);
+
+  /* 요약 카운트 */
+  const sv = (id,v)=>{ const e=document.getElementById(id); if(e) e.textContent=v; };
+  sv('my-direct-cnt',   directs.length);
+  sv('my-indirect-cnt', indirects.length);
+  sv('my-total-cnt',    allDesc.length);
+
+  const wrap = document.getElementById('my-network-wrap');
+  if(!wrap) return;
+
+  if(!allDesc.length){
+    wrap.innerHTML = '<div class="act-empty-box">산하 회원이 없습니다<br><span style="font-size:.72rem;color:var(--text3);">추천 활동을 통해 네트워크를 만들어 보세요!</span></div>';
+    return;
+  }
+
+  let html = '';
+
+  /* 직접 추천 (1촌) */
+  if(directs.length){
+    html += `<div class="my-network-card">
+      <div class="my-network-head">
+        <div class="my-network-title">🌟 직접 추천 회원 (1촌)</div>
+        <div class="my-network-cnt">${directs.length}명</div>
+      </div>`;
+    directs.forEach(m=>{
+      const subDesc   = getAllDescendants(m.id);
+      const compTotal = ALL_COMPS.filter(c=>c.member_id===m.id&&c.status!=='cancelled').reduce((s,c)=>s+c.amount,0);
+      html += `<div class="my-sub-item" onclick="openTreePanel('${m.id}')">
+        <div class="m-avatar ${m.avatar}" style="width:38px;height:38px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:.95rem;font-weight:800;flex-shrink:0;">${m.initial}</div>
+        <div class="my-sub-info">
+          <div class="my-sub-name">${m.name}</div>
+          <div class="my-sub-desc">📞 ${m.contact||'—'} · 산하 ${subDesc.length}명${compTotal>0?' · 수당 '+fmtAmt(compTotal):''}</div>
+        </div>
+        <div style="text-align:right;flex-shrink:0;">
+          <div class="dday ${m.ddayClass}" style="font-size:.68rem;">${m.dday}</div>
+          <div style="font-size:.62rem;color:var(--text3);margin-top:2px;">만료: ${m.endDate||'—'}</div>
+        </div>
+      </div>`;
+    });
+    html += '</div>';
+  }
+
+  /* 간접 추천 (2촌+) — 추천인별 그룹 */
+  if(indirects.length){
+    /* 추천인(직접 회원)별 그룹화 */
+    const groups = {};
+    indirects.forEach(m=>{
+      const parentId = m.referrerId;
+      if(!groups[parentId]) groups[parentId]=[];
+      groups[parentId].push(m);
+    });
+
+    html += `<div class="my-network-card">
+      <div class="my-network-head" style="background:linear-gradient(120deg,#1B5E20,#2E7D32);">
+        <div class="my-network-title">🔗 간접 추천 회원 (2촌+)</div>
+        <div class="my-network-cnt">${indirects.length}명</div>
+      </div>`;
+
+    Object.entries(groups).forEach(([parentId, members])=>{
+      const parent = ALL_MEMBERS[parentId];
+      if(!parent) return;
+      html += `<div style="padding:8px 14px 4px;font-size:.72rem;font-weight:700;color:var(--text3);background:var(--p5);">
+        └ ${parent.name} 님의 산하 ${members.length}명
+      </div>`;
+      members.forEach(m=>{
+        html += `<div class="my-sub-item" onclick="openTreePanel('${m.id}')">
+          <div class="m-avatar ${m.avatar}" style="width:34px;height:34px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:.85rem;font-weight:800;flex-shrink:0;opacity:.9;">${m.initial}</div>
+          <div class="my-sub-info">
+            <div class="my-sub-name" style="font-size:.8rem;">${m.name}</div>
+            <div class="my-sub-desc">📞 ${m.contact||'—'} · ${m.depth}촌</div>
+          </div>
+          <div style="text-align:right;flex-shrink:0;">
+            <div class="dday ${m.ddayClass}" style="font-size:.65rem;">${m.dday}</div>
+          </div>
+        </div>`;
+      });
+    });
+    html += '</div>';
+  }
+
+  wrap.innerHTML = html;
+}
+
+/* ══════════════════════════════════════════
+   renderMembersPage — 회원/관리자 분기
+══════════════════════════════════════════ */
+function renderMembersPage(){
+  const isAdmin = CURRENT_USER?.role==='admin';
+  const adminView  = document.getElementById('mem-admin-view');
+  const memberView = document.getElementById('mem-member-view');
+  if(adminView)  adminView.style.display  = isAdmin ? '' : 'none';
+  if(memberView) memberView.style.display = isAdmin ? 'none' : '';
+  if(isAdmin) renderAdminMemberList();
+  else        renderMyNetwork();
+}
+
 </script>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@700;800&family=Noto+Sans+KR:wght@400;500;600;700&display=swap');
@@ -2091,6 +2388,75 @@ body.mode-desktop .sub-stat-card { max-width:640px; }
   display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:14px;
 }
 
+
+/* ═══ 회원 수정 시트 ═══ */
+.avatar-opt{
+  width:36px;height:36px;border-radius:50%;display:flex;align-items:center;
+  justify-content:center;font-size:.85rem;font-weight:800;cursor:pointer;
+  border:3px solid transparent;transition:all .15s;
+}
+.avatar-opt.selected{border-color:#1A0535;transform:scale(1.15);}
+
+/* ═══ 회원 상세 패널 (하단 시트) ═══ */
+.mem-detail-overlay{
+  position:fixed;inset:0;background:rgba(0,0,0,.45);
+  z-index:300;opacity:0;pointer-events:none;transition:opacity .25s;
+}
+.mem-detail-overlay.show{opacity:1;pointer-events:all;}
+.mem-detail-panel{
+  position:fixed;bottom:0;left:0;right:0;background:var(--card);
+  border-radius:20px 20px 0 0;z-index:301;max-height:90vh;overflow-y:auto;
+  transform:translateY(100%);transition:transform .3s cubic-bezier(.32,1,.23,1);
+}
+.mem-detail-panel.show{transform:translateY(0);}
+.mem-detail-head{
+  padding:18px 16px 12px;border-bottom:1px solid var(--border);
+  display:flex;align-items:center;gap:12px;
+}
+.mem-detail-avatar{
+  width:52px;height:52px;border-radius:50%;
+  display:flex;align-items:center;justify-content:center;
+  font-size:1.3rem;font-weight:800;flex-shrink:0;
+}
+.mem-detail-body{padding:14px;}
+.mem-info-row{
+  display:flex;padding:10px 0;border-bottom:1px solid var(--border);align-items:center;
+}
+.mem-info-row:last-child{border-bottom:none;}
+.mem-info-label{font-size:.72rem;color:var(--text3);width:80px;flex-shrink:0;}
+.mem-info-val{font-size:.82rem;font-weight:700;color:var(--text);flex:1;}
+.mem-detail-actions{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:14px;}
+.mem-action-btn2{
+  padding:11px;border:none;border-radius:10px;font-weight:700;cursor:pointer;
+  font-size:.8rem;font-family:'Noto Sans KR',sans-serif;text-align:center;
+}
+
+/* ═══ 산하 회원 목록 (회원 페이지) ═══ */
+.my-network-wrap{padding:0 14px 20px;}
+.my-network-card{
+  border-radius:14px;overflow:hidden;border:1px solid var(--border);
+  margin-bottom:12px;box-shadow:0 2px 8px rgba(90,31,160,.05);
+}
+.my-network-head{
+  padding:12px 14px;display:flex;align-items:center;justify-content:space-between;
+  background:linear-gradient(120deg,var(--p2),var(--pm));color:#fff;
+}
+.my-network-title{font-size:.88rem;font-weight:800;}
+.my-network-cnt{
+  font-size:.75rem;font-weight:700;background:rgba(255,255,255,.2);
+  padding:3px 10px;border-radius:8px;
+}
+.my-sub-item{
+  padding:11px 14px;border-bottom:1px solid var(--border);
+  display:flex;align-items:center;gap:10px;cursor:pointer;
+  transition:background .12s;
+}
+.my-sub-item:last-child{border-bottom:none;}
+.my-sub-item:active{background:var(--p5);}
+.my-sub-info{flex:1;min-width:0;}
+.my-sub-name{font-size:.83rem;font-weight:700;}
+.my-sub-desc{font-size:.68rem;color:var(--text3);margin-top:2px;}
+
 </style>
 </head>
 <body>
@@ -2333,13 +2699,28 @@ body.mode-desktop .sub-stat-card { max-width:640px; }
         </div>
       </div>
 
-      <!-- 회원용 (기존) -->
+      <!-- 회원용 -->
       <div id="mem-member-view" style="display:none;">
         <div class="page-header">
-          <div><h2>👥 내 네트워크</h2><p>나와 내 하위 회원 목록</p></div>
+          <div><h2>👥 나의 네트워크</h2><p>산하 회원 현황</p></div>
         </div>
-        <div class="search-box"><span>🔍</span><input type="text" id="member-search-m" placeholder="회원명 검색" oninput="filterMemberView()"></div>
-        <div class="card" id="member-list-wrap" style="margin-bottom:14px;"></div>
+        <!-- 네트워크 요약 -->
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;padding:0 14px 14px;">
+          <div class="mem-stat-card" style="background:linear-gradient(135deg,#EDE0FF,#fff);">
+            <div class="mem-stat-n" style="color:#5A1FA0;" id="my-direct-cnt">0</div>
+            <div class="mem-stat-l">직접 추천</div>
+          </div>
+          <div class="mem-stat-card" style="background:linear-gradient(135deg,#E8F5E9,#fff);">
+            <div class="mem-stat-n" style="color:#2E7D32;" id="my-indirect-cnt">0</div>
+            <div class="mem-stat-l">간접 추천</div>
+          </div>
+          <div class="mem-stat-card" style="background:linear-gradient(135deg,#FFF8DC,#fff);">
+            <div class="mem-stat-n" style="color:#A07810;" id="my-total-cnt">0</div>
+            <div class="mem-stat-l">전체 산하</div>
+          </div>
+        </div>
+        <!-- 산하 회원 목록 -->
+        <div class="my-network-wrap" id="my-network-wrap"></div>
       </div>
     </div>
 
@@ -2719,6 +3100,84 @@ body.mode-desktop .sub-stat-card { max-width:640px; }
         </select>
 
         <button class="btn-full btn-purple" style="margin-top:18px;" onclick="submitCompPay()">💰 수당 등록</button>
+      </div>
+    </div>
+
+
+    <!-- ══ 회원 상세 패널 ══ -->
+    <div class="mem-detail-overlay" id="mem-detail-overlay" onclick="closeMemDetail()"></div>
+    <div class="mem-detail-panel" id="mem-detail-panel">
+      <div class="mem-detail-head">
+        <div class="mem-detail-avatar av-purple" id="mdet-avatar">?</div>
+        <div style="flex:1;">
+          <div style="font-size:1rem;font-weight:800;" id="mdet-name">—</div>
+          <div style="font-size:.72rem;color:var(--text3);margin-top:3px;" id="mdet-sub">—</div>
+        </div>
+        <span style="font-size:1.4rem;cursor:pointer;color:var(--text3);" onclick="closeMemDetail()">✕</span>
+      </div>
+      <div class="mem-detail-body">
+        <div class="mem-info-row"><span class="mem-info-label">연락처</span><span class="mem-info-val" id="mdet-contact">—</span></div>
+        <div class="mem-info-row"><span class="mem-info-label">아이디</span><span class="mem-info-val" id="mdet-id">—</span></div>
+        <div class="mem-info-row"><span class="mem-info-label">추천인</span><span class="mem-info-val" id="mdet-referrer">—</span></div>
+        <div class="mem-info-row"><span class="mem-info-label">구독 시작</span><span class="mem-info-val" id="mdet-start">—</span></div>
+        <div class="mem-info-row"><span class="mem-info-label">구독 만료</span><span class="mem-info-val" id="mdet-end">—</span></div>
+        <div class="mem-info-row"><span class="mem-info-label">직접 추천</span><span class="mem-info-val" id="mdet-direct">—</span></div>
+        <div class="mem-info-row"><span class="mem-info-label">수당 합계</span><span class="mem-info-val" id="mdet-comp">—</span></div>
+        <div class="mem-detail-actions">
+          <button class="mem-action-btn2" style="background:#EDE0FF;color:#5A1FA0;" onclick="memDetailAction('link')">🔗 링크 복사</button>
+          <button class="mem-action-btn2" style="background:#E8F5E9;color:#2E7D32;" onclick="memDetailAction('tree')">🌳 트리 보기</button>
+          <button class="mem-action-btn2" style="background:#E3F2FD;color:#1565C0;" onclick="memDetailAction('edit')">✏️ 정보 수정</button>
+          <button class="mem-action-btn2" style="background:#FFF8DC;color:#A07810;" onclick="memDetailAction('comp')">💰 수당 지급</button>
+          <button class="mem-action-btn2" style="background:#FFEBEE;color:#C62828;grid-column:1/-1;" onclick="memDetailAction('delete')">🗑️ 회원 삭제</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ══ 회원 정보 수정 시트 ══ -->
+    <div class="sheet-overlay" id="sheet-edit-member">
+      <div class="sheet">
+        <div class="sheet-handle"></div>
+        <div class="sheet-header">
+          <span class="sheet-title">✏️ 회원 정보 수정</span>
+          <span class="sheet-close" onclick="closeSheet('edit-member')">✕</span>
+        </div>
+        <div class="sheet-body">
+          <div id="edit-err" class="form-error" style="display:none;color:var(--red);font-size:.78rem;margin-bottom:10px;"></div>
+          <label class="form-label">회원명 *</label>
+          <input class="form-input" type="text" id="edit-name" placeholder="홍길동">
+          <label class="form-label">휴대폰 번호 *</label>
+          <input class="form-input" type="tel" id="edit-phone" placeholder="010-0000-0000" maxlength="13" oninput="fmtPhone(this)" inputmode="numeric">
+          <label class="form-label">아이디</label>
+          <input class="form-input" type="text" id="edit-id" placeholder="로그인 아이디" readonly style="background:var(--bg);color:var(--text3);">
+          <label class="form-label">비밀번호 변경</label>
+          <input class="form-input" type="text" id="edit-pw" placeholder="변경할 비밀번호 (미입력 시 유지)">
+          <div class="form-row">
+            <div><label class="form-label">구독 시작일 *</label><input class="form-input" type="date" id="edit-start"></div>
+            <div><label class="form-label">구독 만료일 *</label><input class="form-input" type="date" id="edit-end"></div>
+          </div>
+          <label class="form-label">추천인 변경</label>
+          <select class="form-select" id="edit-referrer">
+            <option value="">— 추천인 없음 (ROOT) —</option>
+          </select>
+          <label class="form-label" style="margin-top:10px;">구독 상태</label>
+          <select class="form-input" id="edit-status">
+            <option value="active">✅ 활성</option>
+            <option value="expired">❌ 만료</option>
+            <option value="inactive">⏸️ 비활성</option>
+          </select>
+          <label class="form-label" style="margin-top:12px;">아바타 색상</label>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px;" id="edit-avatar-wrap">
+            <div class="avatar-opt av-purple" onclick="selectEditAvatar('av-purple',this)">가</div>
+            <div class="avatar-opt av-gold"   onclick="selectEditAvatar('av-gold',this)">나</div>
+            <div class="avatar-opt av-green"  onclick="selectEditAvatar('av-green',this)">다</div>
+            <div class="avatar-opt av-blue"   onclick="selectEditAvatar('av-blue',this)">라</div>
+            <div class="avatar-opt av-red"    onclick="selectEditAvatar('av-red',this)">마</div>
+            <div class="avatar-opt av-teal"   onclick="selectEditAvatar('av-teal',this)">바</div>
+          </div>
+          <input type="hidden" id="edit-member-id">
+          <input type="hidden" id="edit-avatar-val" value="av-purple">
+          <button class="btn-full btn-purple" onclick="submitEditMember()">💾 수정 완료</button>
+        </div>
       </div>
     </div>
 
@@ -4104,6 +4563,7 @@ function openSheet(id){
   if(id==='stock-in')    setTimeout(siInit, 60);
   if(id==='stock-out')   setTimeout(soInit, 60);
   if(id==='comp-pay')    setTimeout(initCompPaySheet, 60);
+  if(id==='edit-member') {} /* openEditMember에서 직접 초기화 */
 }
 
 function initRegForm(){
