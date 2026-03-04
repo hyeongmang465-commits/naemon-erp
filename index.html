@@ -2954,7 +2954,7 @@ function applyLang(){
       .select('*')
       .eq('contact', _clean.replace(/(\d{3})(\d{4})(\d{4})/,'$1-$2-$3'))
       .neq('role','admin')
-      .single();
+      .maybeSingle();
 
     /* 대시 없이도 검색 */
     let _member = _mData;
@@ -3157,9 +3157,15 @@ async function doLogin(){
       .select('*')
       .eq('id', id)
       .eq('pw', pw)
-      .single();
+      .maybeSingle();
 
-    if(error || !data){
+    if(error){
+      console.error('로그인 오류:', error.message);
+      document.getElementById('login-error').style.display='block';
+      if(btn){ btn.textContent='로그인'; btn.disabled=false; }
+      return;
+    }
+    if(!data){
       document.getElementById('login-error').style.display='block';
       if(btn){ btn.textContent='로그인'; btn.disabled=false; }
       return;
@@ -3168,7 +3174,8 @@ async function doLogin(){
     ALL_MEMBERS[data.id] = dbRowToMember(data);
     loginAs(ALL_MEMBERS[data.id]);
   } catch(e){
-    dbErr('로그인', e);
+    console.error('로그인 예외:', e.message);
+    document.getElementById('login-error').style.display='block';
     if(btn){ btn.textContent='로그인'; btn.disabled=false; }
   }
 }
