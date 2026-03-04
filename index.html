@@ -4100,9 +4100,10 @@ function regFormatPhone(el){
 function openSheet(id){
   const el = document.getElementById('sheet-'+id);
   if(el) el.classList.add('show');
-  if(id==='add-member') initRegForm();
-  if(id==='stock-in')   setTimeout(siInit, 60);
-  if(id==='stock-out')  setTimeout(soInit, 60);
+  if(id==='add-member')  initRegForm();
+  if(id==='stock-in')    setTimeout(siInit, 60);
+  if(id==='stock-out')   setTimeout(soInit, 60);
+  if(id==='comp-pay')    setTimeout(initCompPaySheet, 60);
 }
 
 function initRegForm(){
