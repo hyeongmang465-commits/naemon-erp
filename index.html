@@ -714,7 +714,7 @@ async function submitEditMember(){
 
   const updateData = {
     name, contact:phone, start_date:start, end_date:end,
-    referrer_id:refId||null, status, avatar, initial
+    referrer_id:refId||null, status, avatar
   };
   if(pw) updateData.pw = pw;
 
@@ -726,7 +726,7 @@ async function submitEditMember(){
     ALL_MEMBERS[memberId] = dbRowToMember({
       id:memberId, pw:pw||m.pw, name, contact:phone,
       role:m.role||'member', referrer_id:refId||null,
-      start_date:start, end_date:end, status, avatar, initial,
+      start_date:start, end_date:end, status, avatar,
       depth:m.depth||0, depth_label:m.depthLabel||''
     });
 
@@ -3861,7 +3861,7 @@ function dbRowToMember(row){
     id:         row.id,
     pw:         row.pw,
     name:       row.name,
-    initial:    row.name?.[0] || '?',
+    initial:    (row.name || row.id || '?')[0],
     role:       row.role,
     contact:    row.contact || '',
     referrerId: row.referrer_id || null,
