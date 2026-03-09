@@ -506,6 +506,7 @@ function renderAdminMemberList(){
         <div class="mem-card-actions">
           <button class="mem-action-btn btn-link" onclick="event.stopPropagation();showMemberLink('${m.id}')">🔗</button>
           <button class="mem-action-btn btn-tree" onclick="event.stopPropagation();openTreePanel('${m.id}')">🌳</button>
+          <button class="mem-action-btn btn-edit" onclick="event.stopPropagation();openEditMember('${m.id}')">✏️</button>
         </div>
       </div>
     </div>`;
@@ -561,15 +562,6 @@ function openMemDetail(memberId){
 function closeMemDetail(){
   document.getElementById('mem-detail-overlay').classList.remove('show');
   document.getElementById('mem-detail-panel').classList.remove('show');
-}
-
-function memDetailAction(action){
-  if(!_curMemId) return;
-  closeMemDetail();
-  if(action==='link')  { setTimeout(()=>showMemberLink(_curMemId), 200); }
-  if(action==='tree')  { setTimeout(()=>openTreePanel(_curMemId), 200); }
-  if(action==='comp')  { setTimeout(()=>{ showTab('comp'); setTimeout(()=>{ openSheet('comp-pay'); setTimeout(()=>{ const sel=document.getElementById('cp-member'); if(sel) sel.value=_curMemId; },150); },200); },200); }
-  if(action==='renew') { setTimeout(()=>renewMember(_curMemId), 200); }
 }
 
 /* ── 구독 갱신 ── */
@@ -2765,10 +2757,7 @@ body.mode-desktop .sub-stat-card { max-width:640px; }
         <div class="mem-info-row"><span class="mem-info-label">전체 하위</span><span class="mem-info-val" id="mdet-total">—</span></div>
         <div class="mem-info-row"><span class="mem-info-label">구독 수당</span><span class="mem-info-val" id="mdet-comp">—</span></div>
         <div class="mem-detail-actions">
-          <button class="btn-full" style="background:#EDE0FF;color:#5A1FA0;border:none;border-radius:10px;padding:11px;font-weight:700;cursor:pointer;font-size:.8rem;font-family:'Noto Sans KR',sans-serif;" onclick="memDetailAction('link')">🔗 링크 복사</button>
-          <button class="btn-full" style="background:#E8F5E9;color:#2E7D32;border:none;border-radius:10px;padding:11px;font-weight:700;cursor:pointer;font-size:.8rem;font-family:'Noto Sans KR',sans-serif;" onclick="memDetailAction('tree')">🌳 트리 보기</button>
-          <button class="btn-full" style="background:#FFF8DC;color:#A07810;border:none;border-radius:10px;padding:11px;font-weight:700;cursor:pointer;font-size:.8rem;font-family:'Noto Sans KR',sans-serif;" onclick="memDetailAction('comp')">💰 수당 지급</button>
-          <button class="btn-full" style="background:#FFEBEE;color:#C62828;border:none;border-radius:10px;padding:11px;font-weight:700;cursor:pointer;font-size:.8rem;font-family:'Noto Sans KR',sans-serif;" onclick="memDetailAction('renew')">🔄 구독 갱신</button>
+<!-- 구버전 버튼 제거됨 -->
         </div>
       </div>
     </div>
