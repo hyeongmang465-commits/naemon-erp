@@ -1047,6 +1047,265 @@ async function processRegStockOut(memberName, memberId, date){
   return results;
 }
 
+
+/* ════════════════════════════════════════════════════════════
+   ✏️ 수정 시트 탭 전환
+════════════════════════════════════════════════════════════ */
+let _editProducts = [];   /* 상품출고 탭용 */
+let _renewMonths  = 12;
+let _renewMode    = 'month';  /* 'month' | 'date' */
+
+function switchEditTab(tab){
+  ['info','stock','renew'].forEach(t=>{
+    document.getElementById('etab-'+t).classList.toggle('active', t===tab);
+    document.getElementById('etab-'+t+'-body').style.display = t===tab ? '' : 'none';
+  });
+  if(tab==='stock') initEditProductList();
+  if(tab==='renew') initRenewTab();
+}
+
+/* ── openEditMember 오버라이드: 헤더 정보 + 탭 초기화 ── */
+const _origOpenEditMember = openEditMember;
+function openEditMember(memberId){
+  const m = ALL_MEMBERS[memberId];
+  if(!m) return;
+
+  /* 헤더 */
+  const av = document.getElementById('edit-header-avatar');
+  if(av){ av.textContent=m.initial; av.className='m-avatar '+m.avatar+' '; av.style.cssText='width:38px;height:38px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:.95rem;font-weight:800;flex-shrink:0;'; }
+  const hn = document.getElementById('edit-header-name'); if(hn) hn.textContent = m.name;
+  const hs = document.getElementById('edit-header-sub');  if(hs) hs.textContent = m.id + ' · ' + (m.contact||'');
+
+  /* 탭 초기화: info 탭 활성화 */
+  switchEditTab('info');
+
+  /* 출고일 기본값 */
+  const tod = new Date().toISOString().split('T')[0];
+  const od  = document.getElementById('edit-out-date'); if(od) od.value=tod;
+
+  /* 기존 로직 호출 */
+  _origOpenEditMember(memberId);
+}
+
+/* ════════════════════════════════════════════════════════════
+   📦 수정 시트 — 상품 출고 탭
+════════════════════════════════════════════════════════════ */
+function initEditProductList(){
+  _editProducts = [];
+  const wrap = document.getElementById('edit-product-list');
+  if(wrap) wrap.innerHTML = '';
+  const warn = document.getElementById('edit-stock-warn');
+  if(warn) warn.style.display='none';
+}
+
+function addEditProduct(){
+  const wrap = document.getElementById('edit-product-list');
+  if(!wrap) return;
+  const products = Object.values(STOCK_DATA).filter(p=>p.qty>0);
+  if(!products.length){
+    alert('재고가 있는 상품이 없습니다.');
+    return;
+  }
+  const idx = _editProducts.length;
+  _editProducts.push({ code:'', qty:1 });
+
+  const options = Object.values(STOCK_DATA)
+    .map(p=>`<option value="${p.code}" ${p.qty<=0?'disabled':''}>
+       ${p.name} (재고: ${p.qty}개)${p.qty<=0?' — 품절':''}</option>`)
+    .join('');
+
+  const row = document.createElement('div');
+  row.className = 'reg-prod-row';
+  row.id = 'edit-prod-row-'+idx;
+  row.innerHTML = `
+    <select onchange="onEditProdChange(${idx},this)">
+      <option value="">— 상품 선택 —</option>${options}
+    </select>
+    <input class="reg-prod-qty" type="number" min="1" value="1"
+           oninput="onEditQtyChange(${idx},this)">
+    <span class="reg-prod-stock" id="edit-prod-stock-${idx}">재고: —</span>
+    <button class="reg-prod-del" onclick="removeEditProduct(${idx})">✕</button>
+  `;
+  wrap.appendChild(row);
+}
+
+function onEditProdChange(idx, sel){
+  const code = sel.value;
+  _editProducts[idx] = { ..._editProducts[idx], code };
+  const stockEl = document.getElementById('edit-prod-stock-'+idx);
+  if(!stockEl) return;
+  if(!code){ stockEl.textContent='재고: —'; return; }
+  const p = STOCK_DATA[code];
+  if(p){ stockEl.textContent='재고: '+p.qty+'개'; stockEl.className='reg-prod-stock'+(p.qty<=p.safe?' warn':''); }
+  checkEditStockWarn();
+}
+
+function onEditQtyChange(idx, input){
+  const qty = parseInt(input.value)||1;
+  _editProducts[idx] = { ..._editProducts[idx], qty };
+  const code = _editProducts[idx].code;
+  if(code){
+    const p = STOCK_DATA[code];
+    const stockEl = document.getElementById('edit-prod-stock-'+idx);
+    if(stockEl&&p){ stockEl.textContent='재고: '+p.qty+'개'; stockEl.className='reg-prod-stock'+(qty>p.qty?' warn':''); }
+  }
+  checkEditStockWarn();
+}
+
+function removeEditProduct(idx){
+  _editProducts[idx]={ code:'', qty:0 };
+  const row=document.getElementById('edit-prod-row-'+idx);
+  if(row) row.remove();
+  checkEditStockWarn();
+}
+
+function checkEditStockWarn(){
+  const warn=document.getElementById('edit-stock-warn');
+  if(!warn) return;
+  const issues=_editProducts
+    .filter(i=>i.code&&i.qty>0)
+    .filter(i=>{ const p=STOCK_DATA[i.code]; return p&&i.qty>p.qty; })
+    .map(i=>{ const p=STOCK_DATA[i.code]; return p.name+': 재고 '+p.qty+'개, 요청 '+i.qty+'개'; });
+  if(issues.length){ warn.innerHTML='⚠️ 재고 부족:<br>'+issues.join('<br>'); warn.style.display='block'; }
+  else warn.style.display='none';
+}
+
+async function submitEditStockOut(){
+  const memberId = document.getElementById('edit-member-id').value;
+  const m = ALL_MEMBERS[memberId];
+  if(!m) return;
+  const date = document.getElementById('edit-out-date').value;
+  if(!date){ alert('출고일을 선택해 주세요.'); return; }
+
+  const items = _editProducts.filter(i=>i.code&&i.qty>0);
+  if(!items.length){ alert('출고할 상품을 추가해 주세요.'); return; }
+
+  /* 재고 초과 체크 */
+  const over = items.filter(i=>{ const p=STOCK_DATA[i.code]; return p&&i.qty>p.qty; });
+  if(over.length){
+    alert('⚠️ 재고가 부족한 상품이 있습니다. 수량을 확인해 주세요.');
+    return;
+  }
+
+  const results = await processRegStockOut(m.name, memberId, date);
+
+  closeSheet('edit-member');
+  initEditProductList();
+
+  const ok = results.filter(r=>r.startsWith('✅'));
+  const fail = results.filter(r=>!r.startsWith('✅'));
+  const msg = m.name+' 님 출고 완료! '+ok.join(' / ')+(fail.length?' 실패: '+fail.join(', '):'');
+  toast('📦 '+m.name+' 님 '+ok.length+'종 출고 완료!');
+}
+
+/* ════════════════════════════════════════════════════════════
+   🔄 수정 시트 — 구독 연장 탭
+════════════════════════════════════════════════════════════ */
+function initRenewTab(){
+  const memberId = document.getElementById('edit-member-id').value;
+  const m = ALL_MEMBERS[memberId];
+  if(!m) return;
+
+  const sv=(id,v)=>{ const e=document.getElementById(id); if(e) e.textContent=v; };
+  sv('renew-cur-start', m.startDate||'—');
+  sv('renew-cur-end',   m.endDate||'—');
+
+  /* 남은 기간 계산 */
+  if(m.endDate){
+    const diff = Math.ceil((new Date(m.endDate)-new Date())/(1000*60*60*24));
+    sv('renew-dday', diff>0 ? 'D-'+diff+' ('+diff+'일 남음)' : '만료됨');
+  }
+
+  /* 기본값 12개월로 계산 */
+  _renewMonths = 12;
+  _renewMode   = 'month';
+  setRenewMode('month');
+  selectRenewMonth(12);
+}
+
+function setRenewMode(mode){
+  _renewMode = mode;
+  document.getElementById('rmode-month').classList.toggle('active', mode==='month');
+  document.getElementById('rmode-date').classList.toggle('active',  mode==='date');
+  document.getElementById('renew-month-wrap').style.display = mode==='month' ? '' : 'none';
+  document.getElementById('renew-date-wrap').style.display  = mode==='date'  ? '' : 'none';
+  calcRenewPreview();
+}
+
+function selectRenewMonth(m){
+  _renewMonths = m;
+  document.querySelectorAll('.renew-month-chip').forEach(el=>{
+    el.classList.toggle('active', parseInt(el.textContent)===m);
+  });
+  calcRenewPreview();
+}
+
+function onRenewDirectDate(){
+  calcRenewPreview();
+}
+
+function calcRenewPreview(){
+  const memberId = document.getElementById('edit-member-id').value;
+  const mem = ALL_MEMBERS[memberId];
+  if(!mem) return;
+
+  let newEnd;
+  let periodLabel;
+
+  if(_renewMode==='month'){
+    /* 현재 만료일 or 오늘부터 연장 */
+    const baseDate = mem.endDate && new Date(mem.endDate) > new Date()
+      ? new Date(mem.endDate)
+      : new Date();
+    baseDate.setMonth(baseDate.getMonth() + _renewMonths);
+    newEnd = baseDate.toISOString().split('T')[0];
+    periodLabel = _renewMonths+'개월 연장';
+  } else {
+    const direct = document.getElementById('renew-direct-date')?.value;
+    newEnd = direct || '—';
+    periodLabel = direct ? '직접 지정' : '날짜를 선택해 주세요';
+  }
+
+  const ne = document.getElementById('renew-new-end');
+  const pl = document.getElementById('renew-period-label');
+  if(ne) ne.textContent = newEnd;
+  if(pl) pl.textContent = periodLabel;
+}
+
+async function submitRenewMember(){
+  const memberId = document.getElementById('edit-member-id').value;
+  const m = ALL_MEMBERS[memberId];
+  if(!m) return;
+
+  const newEndEl = document.getElementById('renew-new-end');
+  const newEnd   = newEndEl?.textContent;
+  const errEl    = document.getElementById('renew-err');
+
+  if(!newEnd || newEnd==='—' || newEnd==='날짜를 선택해 주세요'){
+    errEl.textContent='❌ 연장 후 만료일을 확인해 주세요.';
+    errEl.style.display='block'; return;
+  }
+  if(newEnd <= (m.endDate||'')){
+    errEl.textContent='❌ 새 만료일이 현재 만료일보다 빠릅니다.';
+    errEl.style.display='block'; return;
+  }
+  errEl.style.display='none';
+
+  const { error } = await supa.from('members')
+    .update({ end_date: newEnd, status: 'active' })
+    .eq('id', memberId);
+
+  if(error){ errEl.textContent='❌ DB 오류: '+error.message; errEl.style.display='block'; return; }
+
+  /* 메모리 업데이트 */
+  ALL_MEMBERS[memberId].endDate = newEnd;
+  ALL_MEMBERS[memberId].status  = 'active';
+
+  closeSheet('edit-member');
+  renderAdminMemberList();
+  toast('🔄 ' + m.name + ' 님 구독 연장 완료! (→ ' + newEnd + ')');
+}
+
 </script>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@700;800&family=Noto+Sans+KR:wght@400;500;600;700&display=swap');
@@ -2647,6 +2906,38 @@ body.mode-desktop .sub-stat-card { max-width:640px; }
 }
 .reg-prod-stock.warn{ color:var(--red); font-weight:700; }
 
+
+/* ═══ 수정 시트 탭 ═══ */
+.edit-tab-btn{
+  flex:1; padding:9px 4px; border:none; background:transparent;
+  font-size:.76rem; font-weight:700; cursor:pointer;
+  color:var(--text3); border-bottom:2.5px solid transparent;
+  font-family:'Noto Sans KR',sans-serif; transition:all .15s;
+}
+.edit-tab-btn.active{
+  color:var(--pm); border-bottom-color:var(--pm);
+}
+/* ═══ 구독 연장 칩 ═══ */
+.renew-mode-btn{
+  padding:9px; border-radius:10px; border:1.5px solid var(--border);
+  background:var(--card); color:var(--text2); font-size:.76rem;
+  font-weight:700; cursor:pointer; font-family:'Noto Sans KR',sans-serif;
+  transition:all .15s;
+}
+.renew-mode-btn.active{
+  background:var(--p2); color:#fff; border-color:var(--p2);
+}
+.renew-month-chip{
+  padding:9px 4px; border-radius:10px; border:1.5px solid var(--border);
+  background:var(--card); color:var(--text2); font-size:.76rem;
+  font-weight:700; cursor:pointer; font-family:'Noto Sans KR',sans-serif;
+  transition:all .15s;
+}
+.renew-month-chip.active{
+  background:linear-gradient(135deg,var(--p2),var(--p3));
+  color:#fff; border-color:var(--p2);
+}
+
 </style>
 </head>
 <body>
@@ -3336,50 +3627,185 @@ body.mode-desktop .sub-stat-card { max-width:640px; }
     </div>
 
     <!-- ══ 회원 정보 수정 시트 ══ -->
+    <!-- ══════════════════════════════════════
+         ✏️ 회원 정보 수정 시트 (3탭)
+    ══════════════════════════════════════ -->
     <div class="sheet-overlay" id="sheet-edit-member">
-      <div class="sheet">
+      <div class="sheet" style="max-height:92vh;">
         <div class="sheet-handle"></div>
-        <div class="sheet-header">
-          <span class="sheet-title">✏️ 회원 정보 수정</span>
-          <span class="sheet-close" onclick="closeSheet('edit-member')">✕</span>
-        </div>
-        <div class="sheet-body">
-          <div id="edit-err" class="form-error" style="display:none;color:var(--red);font-size:.78rem;margin-bottom:10px;"></div>
-          <label class="form-label">회원명 *</label>
-          <input class="form-input" type="text" id="edit-name" placeholder="홍길동">
-          <label class="form-label">휴대폰 번호 *</label>
-          <input class="form-input" type="tel" id="edit-phone" placeholder="010-0000-0000" maxlength="13" oninput="fmtPhone(this)" inputmode="numeric">
-          <label class="form-label">아이디</label>
-          <input class="form-input" type="text" id="edit-id" placeholder="로그인 아이디" readonly style="background:var(--bg);color:var(--text3);">
-          <label class="form-label">비밀번호 변경</label>
-          <input class="form-input" type="text" id="edit-pw" placeholder="변경할 비밀번호 (미입력 시 유지)">
-          <div class="form-row">
-            <div><label class="form-label">구독 시작일 *</label><input class="form-input" type="date" id="edit-start"></div>
-            <div><label class="form-label">구독 만료일 *</label><input class="form-input" type="date" id="edit-end"></div>
+
+        <!-- 헤더 -->
+        <div style="padding:14px 16px 0;display:flex;align-items:center;justify-content:space-between;">
+          <div style="display:flex;align-items:center;gap:10px;">
+            <div id="edit-header-avatar" class="m-avatar av-purple"
+              style="width:38px;height:38px;border-radius:50%;display:flex;align-items:center;
+                     justify-content:center;font-size:.95rem;font-weight:800;flex-shrink:0;">홍</div>
+            <div>
+              <div id="edit-header-name" style="font-size:.92rem;font-weight:800;">회원명</div>
+              <div id="edit-header-sub"  style="font-size:.7rem;color:var(--text3);">아이디</div>
+            </div>
           </div>
-          <label class="form-label">추천인 변경</label>
-          <select class="form-select" id="edit-referrer">
-            <option value="">— 추천인 없음 (ROOT) —</option>
-          </select>
-          <label class="form-label" style="margin-top:10px;">구독 상태</label>
-          <select class="form-input" id="edit-status">
-            <option value="active">✅ 활성</option>
-            <option value="expired">❌ 만료</option>
-            <option value="inactive">⏸️ 비활성</option>
-          </select>
-          <label class="form-label" style="margin-top:12px;">아바타 색상</label>
-          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px;" id="edit-avatar-wrap">
-            <div class="avatar-opt av-purple" onclick="selectEditAvatar('av-purple',this)">가</div>
-            <div class="avatar-opt av-gold"   onclick="selectEditAvatar('av-gold',this)">나</div>
-            <div class="avatar-opt av-green"  onclick="selectEditAvatar('av-green',this)">다</div>
-            <div class="avatar-opt av-blue"   onclick="selectEditAvatar('av-blue',this)">라</div>
-            <div class="avatar-opt av-red"    onclick="selectEditAvatar('av-red',this)">마</div>
-            <div class="avatar-opt av-teal"   onclick="selectEditAvatar('av-teal',this)">바</div>
-          </div>
-          <input type="hidden" id="edit-member-id">
-          <input type="hidden" id="edit-avatar-val" value="av-purple">
-          <button class="btn-full btn-purple" onclick="submitEditMember()">💾 수정 완료</button>
+          <span style="font-size:1.3rem;cursor:pointer;color:var(--text3);padding:4px 8px;"
+                onclick="closeSheet('edit-member')">✕</span>
         </div>
+
+        <!-- 탭 네비 -->
+        <div style="display:flex;gap:0;margin:12px 16px 0;border-bottom:2px solid var(--border);">
+          <button class="edit-tab-btn active" id="etab-info"   onclick="switchEditTab('info')">✏️ 기본정보</button>
+          <button class="edit-tab-btn"        id="etab-stock"  onclick="switchEditTab('stock')">📦 상품출고</button>
+          <button class="edit-tab-btn"        id="etab-renew"  onclick="switchEditTab('renew')">🔄 구독연장</button>
+        </div>
+
+        <div style="overflow-y:auto;padding:16px;padding-bottom:24px;">
+
+          <!-- ── TAB 1: 기본 정보 ── -->
+          <div id="etab-info-body">
+            <div id="edit-err" style="display:none;color:var(--red);font-size:.78rem;margin-bottom:10px;padding:8px 10px;background:#FFEBEE;border-radius:8px;"></div>
+
+            <label class="form-label">회원명 *</label>
+            <input class="form-input" type="text" id="edit-name" placeholder="홍길동">
+
+            <label class="form-label">휴대폰 번호 *</label>
+            <input class="form-input" type="tel" id="edit-phone" placeholder="010-0000-0000"
+                   maxlength="13" oninput="fmtPhone(this)" inputmode="numeric">
+
+            <label class="form-label">아이디</label>
+            <input class="form-input" type="text" id="edit-id" readonly
+                   style="background:var(--bg);color:var(--text3);">
+
+            <label class="form-label">비밀번호 변경</label>
+            <input class="form-input" type="text" id="edit-pw" placeholder="변경할 비밀번호 (미입력 시 유지)">
+
+            <div class="form-row">
+              <div><label class="form-label">구독 시작일</label>
+                   <input class="form-input" type="date" id="edit-start"></div>
+              <div><label class="form-label">구독 만료일</label>
+                   <input class="form-input" type="date" id="edit-end"></div>
+            </div>
+
+            <label class="form-label">추천인 변경</label>
+            <select class="form-select" id="edit-referrer">
+              <option value="">— 추천인 없음 (ROOT) —</option>
+            </select>
+
+            <label class="form-label" style="margin-top:10px;">구독 상태</label>
+            <select class="form-input" id="edit-status">
+              <option value="active">✅ 활성</option>
+              <option value="expired">❌ 만료</option>
+              <option value="inactive">⏸️ 비활성</option>
+            </select>
+
+            <label class="form-label" style="margin-top:12px;">아바타 색상</label>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px;" id="edit-avatar-wrap">
+              <div class="avatar-opt av-purple" onclick="selectEditAvatar('av-purple',this)">가</div>
+              <div class="avatar-opt av-gold"   onclick="selectEditAvatar('av-gold',this)">나</div>
+              <div class="avatar-opt av-green"  onclick="selectEditAvatar('av-green',this)">다</div>
+              <div class="avatar-opt av-blue"   onclick="selectEditAvatar('av-blue',this)">라</div>
+              <div class="avatar-opt av-red"    onclick="selectEditAvatar('av-red',this)">마</div>
+              <div class="avatar-opt av-teal"   onclick="selectEditAvatar('av-teal',this)">바</div>
+            </div>
+
+            <input type="hidden" id="edit-member-id">
+            <input type="hidden" id="edit-avatar-val" value="av-purple">
+            <button class="btn-full btn-purple" onclick="submitEditMember()">💾 수정 완료</button>
+          </div>
+
+          <!-- ── TAB 2: 상품 출고 ── -->
+          <div id="etab-stock-body" style="display:none;">
+            <div style="font-size:.78rem;color:var(--text3);margin-bottom:14px;
+                        padding:10px 12px;background:var(--p5);border-radius:10px;line-height:1.6;">
+              📦 선택한 상품을 이 회원에게 출고합니다.<br>출고 즉시 재고에서 차감됩니다.
+            </div>
+
+            <!-- 출고일 -->
+            <label class="form-label">출고일 *</label>
+            <input class="form-input" type="date" id="edit-out-date">
+
+            <!-- 상품 행 목록 -->
+            <div id="edit-product-list"></div>
+            <button type="button" onclick="addEditProduct()"
+              style="width:100%;margin-top:8px;padding:10px;border-radius:10px;
+                     border:1.5px dashed var(--border);background:transparent;
+                     color:var(--text3);font-size:.78rem;font-weight:700;cursor:pointer;
+                     font-family:'Noto Sans KR',sans-serif;">＋ 상품 추가</button>
+
+            <div id="edit-stock-warn" style="display:none;margin-top:8px;font-size:.72rem;
+                 color:var(--red);font-weight:700;padding:8px 10px;background:#FFEBEE;border-radius:8px;"></div>
+
+            <button class="btn-full" style="margin-top:16px;background:linear-gradient(135deg,#2E7D32,#43A047);
+                    color:#fff;border:none;border-radius:14px;padding:14px;font-size:.9rem;
+                    font-weight:800;cursor:pointer;font-family:'Noto Sans KR',sans-serif;"
+                    onclick="submitEditStockOut()">📤 출고 완료</button>
+          </div>
+
+          <!-- ── TAB 3: 구독 연장 ── -->
+          <div id="etab-renew-body" style="display:none;">
+
+            <!-- 현재 구독 현황 카드 -->
+            <div style="background:var(--p5);border-radius:12px;padding:14px;margin-bottom:16px;">
+              <div style="font-size:.72rem;color:var(--text3);margin-bottom:8px;font-weight:700;">현재 구독 현황</div>
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+                <span style="font-size:.78rem;color:var(--text2);">시작일</span>
+                <span style="font-size:.82rem;font-weight:700;" id="renew-cur-start">—</span>
+              </div>
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+                <span style="font-size:.78rem;color:var(--text2);">현재 만료일</span>
+                <span style="font-size:.88rem;font-weight:800;color:var(--pm);" id="renew-cur-end">—</span>
+              </div>
+              <div style="display:flex;justify-content:space-between;align-items:center;">
+                <span style="font-size:.78rem;color:var(--text2);">남은 기간</span>
+                <span style="font-size:.82rem;font-weight:700;" id="renew-dday">—</span>
+              </div>
+            </div>
+
+            <!-- 연장 방식 선택 -->
+            <label class="form-label">연장 방식</label>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:14px;">
+              <button class="renew-mode-btn active" id="rmode-month" onclick="setRenewMode('month')">📅 개월 선택</button>
+              <button class="renew-mode-btn"        id="rmode-date"  onclick="setRenewMode('date')">📆 날짜 직접</button>
+            </div>
+
+            <!-- 개월 선택 -->
+            <div id="renew-month-wrap">
+              <label class="form-label">연장 기간</label>
+              <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:14px;">
+                <button class="renew-month-chip" onclick="selectRenewMonth(1)">1개월</button>
+                <button class="renew-month-chip" onclick="selectRenewMonth(3)">3개월</button>
+                <button class="renew-month-chip" onclick="selectRenewMonth(6)">6개월</button>
+                <button class="renew-month-chip active" onclick="selectRenewMonth(12)">12개월</button>
+              </div>
+            </div>
+
+            <!-- 날짜 직접 -->
+            <div id="renew-date-wrap" style="display:none;">
+              <label class="form-label">새 만료일 직접 입력</label>
+              <input class="form-input" type="date" id="renew-direct-date" oninput="onRenewDirectDate()">
+            </div>
+
+            <!-- 연장 후 날짜 미리보기 -->
+            <div style="background:linear-gradient(135deg,var(--p2),var(--p3));border-radius:12px;
+                        padding:14px;margin-bottom:16px;color:#fff;display:flex;
+                        justify-content:space-between;align-items:center;">
+              <div>
+                <div style="font-size:.68rem;opacity:.8;margin-bottom:4px;">연장 후 만료일</div>
+                <div style="font-size:1.1rem;font-weight:800;" id="renew-new-end">—</div>
+              </div>
+              <div style="text-align:right;">
+                <div style="font-size:.68rem;opacity:.8;margin-bottom:4px;">연장 기간</div>
+                <div style="font-size:.9rem;font-weight:700;" id="renew-period-label">12개월</div>
+              </div>
+            </div>
+
+            <div id="renew-err" style="display:none;color:var(--red);font-size:.78rem;margin-bottom:10px;
+                 padding:8px 10px;background:#FFEBEE;border-radius:8px;"></div>
+
+            <button class="btn-full" style="background:linear-gradient(135deg,var(--p2),var(--p3));
+                    color:#fff;border:none;border-radius:14px;padding:14px;font-size:.9rem;
+                    font-weight:800;cursor:pointer;font-family:'Noto Sans KR',sans-serif;"
+                    onclick="submitRenewMember()">🔄 구독 연장 완료</button>
+          </div>
+
+        </div><!-- /scroll -->
       </div>
     </div>
 
