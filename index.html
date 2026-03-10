@@ -654,6 +654,13 @@ function openEditMember(memberId){
   const m = ALL_MEMBERS[memberId];
   if(!m) return;
 
+  /* ── 헤더 아바타/이름 표시 ── */
+  const av = document.getElementById('edit-header-avatar');
+  if(av){ av.textContent=m.initial; av.className='m-avatar '+m.avatar; av.style.cssText='width:38px;height:38px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:.95rem;font-weight:800;flex-shrink:0;'; }
+  const hn = document.getElementById('edit-header-name'); if(hn) hn.textContent = m.name;
+  const hs = document.getElementById('edit-header-sub');  if(hs) hs.textContent = m.id+' · '+(m.contact||'');
+
+  /* ── 기본 정보 폼 채우기 ── */
   document.getElementById('edit-member-id').value = memberId;
   document.getElementById('edit-name').value   = m.name||'';
   document.getElementById('edit-phone').value  = m.contact||'';
@@ -664,7 +671,7 @@ function openEditMember(memberId){
   document.getElementById('edit-status').value = m.status||'active';
   document.getElementById('edit-err').style.display='none';
 
-  /* 추천인 드롭다운 */
+  /* ── 추천인 드롭다운 ── */
   const sel = document.getElementById('edit-referrer');
   sel.innerHTML = '<option value="">— 추천인 없음 (ROOT) —</option>' +
     Object.values(ALL_MEMBERS)
@@ -672,7 +679,7 @@ function openEditMember(memberId){
       .map(x=>`<option value="${x.id}" ${x.id===m.referrerId?'selected':''}>${x.name} (${x.contact||x.id})</option>`)
       .join('');
 
-  /* 아바타 */
+  /* ── 아바타 선택 ── */
   _editAvatar = m.avatar||'av-purple';
   document.getElementById('edit-avatar-val').value = _editAvatar;
   const initial = m.initial||m.name?.charAt(0)||'?';
@@ -680,6 +687,13 @@ function openEditMember(memberId){
     el.textContent = initial;
     el.classList.toggle('selected', el.classList.contains(_editAvatar));
   });
+
+  /* ── 출고일 기본값 ── */
+  const tod = new Date().toISOString().split('T')[0];
+  const od = document.getElementById('edit-out-date'); if(od) od.value=tod;
+
+  /* ── 탭 초기화: info 탭 활성화 ── */
+  switchEditTab('info');
 
   openSheet('edit-member');
 }
@@ -1064,28 +1078,7 @@ function switchEditTab(tab){
   if(tab==='renew') initRenewTab();
 }
 
-/* ── openEditMember 오버라이드: 헤더 정보 + 탭 초기화 ── */
-const _origOpenEditMember = openEditMember;
-function openEditMember(memberId){
-  const m = ALL_MEMBERS[memberId];
-  if(!m) return;
-
-  /* 헤더 */
-  const av = document.getElementById('edit-header-avatar');
-  if(av){ av.textContent=m.initial; av.className='m-avatar '+m.avatar+' '; av.style.cssText='width:38px;height:38px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:.95rem;font-weight:800;flex-shrink:0;'; }
-  const hn = document.getElementById('edit-header-name'); if(hn) hn.textContent = m.name;
-  const hs = document.getElementById('edit-header-sub');  if(hs) hs.textContent = m.id + ' · ' + (m.contact||'');
-
-  /* 탭 초기화: info 탭 활성화 */
-  switchEditTab('info');
-
-  /* 출고일 기본값 */
-  const tod = new Date().toISOString().split('T')[0];
-  const od  = document.getElementById('edit-out-date'); if(od) od.value=tod;
-
-  /* 기존 로직 호출 */
-  _origOpenEditMember(memberId);
-}
+/* openEditMember: 원본 함수로 통합됨 */
 
 /* ════════════════════════════════════════════════════════════
    📦 수정 시트 — 상품 출고 탭
