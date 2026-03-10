@@ -885,6 +885,168 @@ function renderMembersPage(){
   else        renderMyNetwork();
 }
 
+
+/* ════════════════════════════════════════════════════════════
+   📦 회원 등록 시 상품 선택 & 재고 자동 차감
+════════════════════════════════════════════════════════════ */
+let _regProducts = [];   /* [{code, qty}] */
+
+/* ── 등록 폼 초기화 시 상품 목록도 초기화 ── */
+function initRegProductList(){
+  _regProducts = [];
+  const wrap = document.getElementById('reg-product-list');
+  if(wrap) wrap.innerHTML = '';
+  const warn = document.getElementById('reg-stock-warn');
+  if(warn) warn.style.display = 'none';
+}
+
+/* ── 상품 행 추가 ── */
+function addRegProduct(){
+  const wrap = document.getElementById('reg-product-list');
+  if(!wrap) return;
+
+  const products = Object.values(STOCK_DATA);
+  if(!products.length){
+    alert('등록된 상품이 없습니다. 재고 관리에서 먼저 상품을 등록해 주세요.');
+    return;
+  }
+
+  const idx = _regProducts.length;
+  _regProducts.push({ code:'', qty:1 });
+
+  const options = products.map(p =>
+    `<option value="${p.code}">${p.name} (재고: ${p.qty}개)</option>`
+  ).join('');
+
+  const row = document.createElement('div');
+  row.className = 'reg-prod-row';
+  row.id = 'reg-prod-row-' + idx;
+  row.innerHTML = `
+    <select onchange="onRegProdChange(${idx},this)">
+      <option value="">— 상품 선택 —</option>
+      ${options}
+    </select>
+    <input class="reg-prod-qty" type="number" min="1" value="1"
+           placeholder="수량" oninput="onRegQtyChange(${idx},this)">
+    <span class="reg-prod-stock" id="reg-prod-stock-${idx}">재고: —</span>
+    <button class="reg-prod-del" onclick="removeRegProduct(${idx})">✕</button>
+  `;
+  wrap.appendChild(row);
+}
+
+/* ── 상품 선택 변경 ── */
+function onRegProdChange(idx, sel){
+  const code = sel.value;
+  _regProducts[idx] = { ..._regProducts[idx], code };
+
+  const stockEl = document.getElementById('reg-prod-stock-' + idx);
+  if(stockEl){
+    if(!code){ stockEl.textContent = '재고: —'; stockEl.className = 'reg-prod-stock'; return; }
+    const p = STOCK_DATA[code];
+    if(p){
+      const qty = _regProducts[idx].qty || 1;
+      const isOver = qty > p.qty;
+      stockEl.textContent = '재고: ' + p.qty + '개';
+      stockEl.className = 'reg-prod-stock' + (p.qty <= p.safe ? ' warn' : '');
+    }
+  }
+  checkRegStockWarn();
+}
+
+/* ── 수량 변경 ── */
+function onRegQtyChange(idx, input){
+  const qty = parseInt(input.value) || 1;
+  _regProducts[idx] = { ..._regProducts[idx], qty };
+  const code = _regProducts[idx].code;
+  const stockEl = document.getElementById('reg-prod-stock-' + idx);
+  if(stockEl && code){
+    const p = STOCK_DATA[code];
+    if(p){
+      stockEl.textContent = '재고: ' + p.qty + '개';
+      stockEl.className = 'reg-prod-stock' + (qty > p.qty ? ' warn' : (p.qty <= p.safe ? ' warn' : ''));
+    }
+  }
+  checkRegStockWarn();
+}
+
+/* ── 상품 행 제거 ── */
+function removeRegProduct(idx){
+  _regProducts[idx] = { code:'', qty:0 };
+  const row = document.getElementById('reg-prod-row-' + idx);
+  if(row) row.remove();
+  checkRegStockWarn();
+}
+
+/* ── 재고 부족 경고 체크 ── */
+function checkRegStockWarn(){
+  const warn = document.getElementById('reg-stock-warn');
+  if(!warn) return;
+  const issues = _regProducts
+    .filter(item => item.code && item.qty > 0)
+    .filter(item => {
+      const p = STOCK_DATA[item.code];
+      return p && item.qty > p.qty;
+    })
+    .map(item => {
+      const p = STOCK_DATA[item.code];
+      return `${p.name}: 재고 ${p.qty}개인데 ${item.qty}개 출고 예정`;
+    });
+
+  if(issues.length){
+    warn.innerHTML = '⚠️ 재고 부족:<br>' + issues.join('<br>');
+    warn.style.display = 'block';
+  } else {
+    warn.style.display = 'none';
+  }
+}
+
+/* ── 등록 완료 후 선택 상품 재고 차감 ── */
+async function processRegStockOut(memberName, memberId, date){
+  const items = _regProducts.filter(item => item.code && item.qty > 0);
+  if(!items.length) return;  /* 상품 없으면 스킵 */
+
+  const results = [];
+  for(const item of items){
+    const p = STOCK_DATA[item.code];
+    if(!p){ results.push('❌ ' + item.code + ' 상품 없음'); continue; }
+    if(item.qty > p.qty){
+      results.push('⚠️ ' + p.name + ' 재고 부족 (재고: ' + p.qty + ', 요청: ' + item.qty + ')');
+      continue;
+    }
+
+    const newQty  = p.qty - item.qty;
+    const memo    = memberName + ' 님 구독 등록 출고';
+
+    /* DB 재고 차감 + 이력 저장 */
+    const [{ error:uErr }, { error:hErr }] = await Promise.all([
+      supa.from('products').update({ qty: newQty }).eq('code', item.code),
+      supa.from('stock_history').insert({
+        product_code: item.code,
+        type: 'out',
+        qty:  item.qty,
+        date: date,
+        memo: memo
+      })
+    ]);
+
+    if(uErr){ results.push('❌ ' + p.name + ' 차감 오류: ' + uErr.message); continue; }
+
+    /* 메모리 반영 */
+    p.qty = newQty;
+    p.history.unshift({ t:'out', q:item.qty, d:date, m:memo });
+    if(p.monthly?.outArr) p.monthly.outArr[p.monthly.outArr.length-1] += item.qty;
+
+    results.push('✅ ' + p.name + ' ' + item.qty + '개 출고 (잔여: ' + newQty + '개)');
+    console.log('📦 재고 차감:', p.name, item.qty + '개');
+  }
+
+  /* 재고 UI 갱신 */
+  refreshStockKPI();
+  renderStockList();
+
+  return results;
+}
+
 </script>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@700;800&family=Noto+Sans+KR:wght@400;500;600;700&display=swap');
@@ -2454,6 +2616,37 @@ body.mode-desktop .sub-stat-card { max-width:640px; }
 .my-sub-name{font-size:.83rem;font-weight:700;}
 .my-sub-desc{font-size:.68rem;color:var(--text3);margin-top:2px;}
 
+
+/* ═══ 회원 등록 상품 선택 ═══ */
+.reg-prod-row{
+  display:flex; align-items:center; gap:8px;
+  margin-bottom:8px; background:var(--card);
+  border:1px solid var(--border); border-radius:10px;
+  padding:8px 10px;
+}
+.reg-prod-row select{
+  flex:1; padding:6px 8px; border-radius:8px;
+  border:1px solid var(--border); background:var(--bg);
+  font-size:.78rem; font-family:'Noto Sans KR',sans-serif;
+  color:var(--text);
+}
+.reg-prod-qty{
+  width:60px; padding:6px 8px; border-radius:8px;
+  border:1px solid var(--border); background:var(--bg);
+  font-size:.78rem; text-align:center;
+  font-family:'Noto Sans KR',sans-serif; color:var(--text);
+}
+.reg-prod-stock{
+  font-size:.65rem; color:var(--text3); white-space:nowrap; min-width:44px; text-align:right;
+}
+.reg-prod-del{
+  width:24px; height:24px; border-radius:50%; border:none;
+  background:#FFEBEE; color:#C62828; font-size:.8rem;
+  cursor:pointer; flex-shrink:0; display:flex;
+  align-items:center; justify-content:center; font-weight:800;
+}
+.reg-prod-stock.warn{ color:var(--red); font-weight:700; }
+
 </style>
 </head>
 <body>
@@ -3289,20 +3482,45 @@ body.mode-desktop .sub-stat-card { max-width:640px; }
     <!-- ── STEP 1: 등록 폼 ── -->
     <div id="reg-form-view">
       <h3>👤 신규 구독회원 등록</h3>
+
       <label class="form-label">회원명 *</label>
       <input class="form-input" type="text" id="reg-name" placeholder="예) 홍길동" oninput="regValidate()">
+
       <label class="form-label">휴대폰 번호 *</label>
       <input class="form-input" type="tel" id="reg-phone" placeholder="010-0000-0000" maxlength="13"
              oninput="regFormatPhone(this);regValidate()" inputmode="numeric">
+
       <div class="form-row">
         <div><label class="form-label">구독 시작일 *</label><input class="form-input" type="date" id="reg-start"></div>
         <div><label class="form-label">구독 마감일 *</label><input class="form-input" type="date" id="reg-end"></div>
       </div>
+
       <label class="form-label">추천인 (선택)</label>
       <select class="form-select" id="reg-referrer">
         <option value="">— 추천인 없음 (ROOT) —</option>
       </select>
-      <div id="reg-err" style="font-size:.75rem;color:var(--red);margin:-6px 0 10px;display:none;"></div>
+
+      <!-- ── 출고 상품 선택 섹션 ── -->
+      <div style="margin:14px 0 4px;padding:12px 14px;background:var(--p5);border-radius:12px;border:1px solid var(--border);">
+        <div style="font-size:.78rem;font-weight:800;color:var(--p2);margin-bottom:10px;">📦 배송 상품 선택 <span style="font-size:.68rem;font-weight:400;color:var(--text3);">(등록 시 재고 자동 차감)</span></div>
+
+        <!-- 상품 추가 버튼 -->
+        <div id="reg-product-list">
+          <!-- JS로 동적 생성 -->
+        </div>
+        <button type="button" onclick="addRegProduct()"
+          style="width:100%;margin-top:8px;padding:9px;border-radius:10px;
+                 border:1.5px dashed var(--border);background:transparent;
+                 color:var(--text3);font-size:.78rem;font-weight:700;cursor:pointer;
+                 font-family:'Noto Sans KR',sans-serif;">
+          ＋ 상품 추가
+        </button>
+
+        <!-- 재고 부족 경고 -->
+        <div id="reg-stock-warn" style="display:none;margin-top:8px;font-size:.72rem;color:var(--red);font-weight:700;"></div>
+      </div>
+
+      <div id="reg-err" style="font-size:.75rem;color:var(--red);margin:8px 0 6px;display:none;"></div>
       <button class="btn-full" id="reg-submit-btn" onclick="submitRegister()">✅ 등록 완료 → 링크 생성</button>
     </div>
 
@@ -4601,6 +4819,8 @@ function initRegForm(){
   const _rn=document.getElementById('reg-name'); if(_rn) _rn.value='';
   const _rp=document.getElementById('reg-phone'); if(_rp) _rp.value='';
   document.getElementById('reg-err').style.display='none';
+  // 상품 선택 초기화
+  initRegProductList();
   // 날짜 기본값
   const today=new Date().toISOString().split('T')[0];
   const _rs=document.getElementById('reg-start'); if(_rs) _rs.value=today;
@@ -4679,6 +4899,12 @@ async function submitRegister(){
 
   if(btn){ btn.textContent='등록'; btn.disabled=false; }
 
+  /* ── 출고 상품 재고 차감 ── */
+  const stockResults = await processRegStockOut(name, newId, start);
+  if(stockResults && stockResults.length){
+    console.log('📦 출고 결과:', stockResults);
+  }
+
   // 링크 생성
   const memberLink = generateMemberLink(phone);
 
@@ -4688,7 +4914,34 @@ async function submitRegister(){
   refreshSubStat();
   document.getElementById('lr-icon').textContent=name[0];
   document.getElementById('lr-name').textContent=name+' 님 등록 완료!';
-  document.getElementById('lr-sub').textContent=phone+' · 구독 마감: '+end;
+
+  /* 출고 결과 표시 */
+  let subTxt = phone + ' · 구독 마감: ' + end;
+  if(stockResults && stockResults.length){
+    subTxt += '\n' + stockResults.join(' / ');
+  }
+  document.getElementById('lr-sub').textContent = phone + ' · 구독 마감: ' + end;
+
+  /* 출고 결과 카드 표시 */
+  let stockResultHtml = '';
+  if(stockResults && stockResults.length){
+    stockResultHtml = `<div style="margin-top:12px;background:var(--p5);border-radius:10px;padding:10px 14px;">
+      <div style="font-size:.75rem;font-weight:800;color:var(--p2);margin-bottom:6px;">📦 출고 처리 결과</div>
+      ${stockResults.map(r=>`<div style="font-size:.72rem;color:var(--text2);margin-bottom:3px;">${r}</div>`).join('')}
+    </div>`;
+  }
+  const lrSuccess = document.querySelector('.lr-success');
+  if(lrSuccess){
+    const existing = document.getElementById('lr-stock-result');
+    if(existing) existing.remove();
+    if(stockResultHtml){
+      const div = document.createElement('div');
+      div.id = 'lr-stock-result';
+      div.innerHTML = stockResultHtml;
+      lrSuccess.parentNode.insertBefore(div, lrSuccess.nextSibling);
+    }
+  }
+
   document.getElementById('lr-link-text').textContent=memberLink;
   document.getElementById('lr-link-box').dataset.link=memberLink;
 }
