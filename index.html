@@ -1015,9 +1015,10 @@ function checkRegStockWarn(){
 }
 
 /* ── 등록 완료 후 선택 상품 재고 차감 ── */
-async function processRegStockOut(memberName, memberId, date){
-  const items = _regProducts.filter(item => item.code && item.qty > 0);
-  if(!items.length) return;  /* 상품 없으면 스킵 */
+async function processRegStockOut(memberName, memberId, date, sourceList){
+  const src   = sourceList || _regProducts;
+  const items = src.filter(item => item.code && item.qty > 0);
+  if(!items.length) return [];  /* 상품 없으면 빈 배열 */
 
   const results = [];
   for(const item of items){
@@ -1180,7 +1181,7 @@ async function submitEditStockOut(){
     return;
   }
 
-  const results = await processRegStockOut(m.name, memberId, date);
+  const results = await processRegStockOut(m.name, memberId, date, _editProducts);
 
   closeSheet('edit-member');
   initEditProductList();
@@ -5643,6 +5644,7 @@ function siInit(){
   const q=document.getElementById('si-qty');  if(q) q.value='';
   const m=document.getElementById('si-memo'); if(m) m.value='';
   const e=document.getElementById('si-err');  if(e) e.style.display='none';
+  syncProductSelects(null);   /* 상품 목록 동기화 */
   siUpdatePreview();
 }
 async function submitStockIn(){
@@ -5664,7 +5666,7 @@ async function submitStockIn(){
     supa.from('stock_history').insert({ product_code:code, type:'in', qty, date, memo })
   ]);
   if(uErr){ dbErr('입고 재고 업데이트', uErr); return; }
-  if(hErr){ dbErr('입고 이력 저장', hErr); return; }
+  if(hErr){ console.warn('입고 이력 저장 오류(재고는 증가됨):', hErr.message); }
 
   // 메모리 반영
   p.qty = newQty;
@@ -5707,6 +5709,7 @@ function soInit(){
   const q=document.getElementById('so-qty');  if(q) q.value='';
   const m=document.getElementById('so-memo'); if(m) m.value='';
   const e=document.getElementById('so-err');  if(e) e.style.display='none';
+  syncProductSelects(null);   /* 상품 목록 동기화 */
   soUpdatePreview();
 }
 async function submitStockOut(){
@@ -5729,7 +5732,7 @@ async function submitStockOut(){
     supa.from('stock_history').insert({ product_code:code, type:'out', qty, date, memo })
   ]);
   if(uErr2){ dbErr('출고 재고 업데이트', uErr2); return; }
-  if(hErr2){ dbErr('출고 이력 저장', hErr2); return; }
+  if(hErr2){ console.warn('출고 이력 저장 오류(재고는 차감됨):', hErr2.message); }
 
   // 메모리 반영
   p.qty = newQty2;
