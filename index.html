@@ -5616,6 +5616,23 @@ function spOpenOut(){
   }, 360);
 }
 
+/* ── 재고 상세 패널에서 상품 삭제 ── */
+async function spDeleteProduct(){
+  if(!spCode || !STOCK_DATA[spCode]){ return; }
+  const p = STOCK_DATA[spCode];
+  if(!confirm('⚠️ [' + p.name + '] 을(를) 삭제하시겠습니까?\n재고 이력도 함께 삭제됩니다.')) return;
+
+  const { error } = await supa.from('products').delete().eq('code', spCode);
+  if(error){ dbErr('상품 삭제', error); return; }
+
+  delete STOCK_DATA[spCode];
+  closeStockPanel();
+  renderStockList();
+  syncProductSelects(null);
+  refreshStockKPI();
+  toast('🗑️ ' + p.name + ' 삭제 완료');
+}
+
 function closeStockPanel(){
   document.getElementById('sp-overlay').classList.remove('show');
   document.getElementById('sp-panel').classList.remove('open');
@@ -6265,6 +6282,10 @@ function pmSelectProduct(){
   document.getElementById('pm-qty').textContent   = p.qty + '개';
   document.getElementById('pm-safe').textContent  = p.safe + '개';
   document.getElementById('pm-max').textContent   = p.max + '개';
+  /* 수정 필드에도 현재 값 채우기 */
+  const en = document.getElementById('pm-edit-name'); if(en) en.value = p.name;
+  const es = document.getElementById('pm-edit-safe'); if(es) es.value = p.safe;
+  const em = document.getElementById('pm-edit-max');  if(em) em.value = p.max;
   if(prev) prev.style.display = '';
 }
 
@@ -6280,6 +6301,40 @@ function pmApplySelect(){
   closeProdModal();
 }
 
+/* ── 상품 정보 수정 ── */
+async function pmEditProduct(){
+  const code = document.getElementById('pm-product')?.value;
+  if(!code || !STOCK_DATA[code]){ toast('❌ 상품을 선택하세요'); return; }
+  const p    = STOCK_DATA[code];
+  const name = document.getElementById('pm-edit-name')?.value.trim();
+  const safe = parseInt(document.getElementById('pm-edit-safe')?.value) || p.safe;
+  const max  = parseInt(document.getElementById('pm-edit-max')?.value)  || p.max;
+
+  if(!name){ toast('❌ 상품명을 입력하세요'); return; }
+  if(safe < 1){ toast('❌ 안전재고는 1 이상이어야 합니다'); return; }
+  if(max < safe){ toast('❌ 최대재고는 안전재고보다 커야 합니다'); return; }
+
+  /* 이름 중복 체크 (자기 자신 제외) */
+  const dup = Object.values(STOCK_DATA).find(x => x.name===name && x.code!==code);
+  if(dup){ toast('❌ 이미 같은 이름의 상품이 있습니다'); return; }
+
+  const { error } = await supa.from('products')
+    .update({ name, safe, max }).eq('code', code);
+  if(error){ dbErr('상품 수정', error); return; }
+
+  /* 메모리 업데이트 */
+  p.name = name; p.safe = safe; p.max = max;
+
+  /* UI 갱신 */
+  document.getElementById('pm-pname').textContent = name;
+  document.getElementById('pm-safe').textContent  = safe + '개';
+  document.getElementById('pm-max').textContent   = max  + '개';
+  renderStockList();
+  syncProductSelects(code);
+  refreshStockKPI();
+  toast('✅ ' + name + ' 정보 수정 완료!');
+}
+
 /* ── 상품 삭제 ── */
 async function pmDeleteProduct(){
   const code = document.getElementById('pm-product')?.value;
@@ -6287,6 +6342,8 @@ async function pmDeleteProduct(){
   const name = STOCK_DATA[code].name;
   if(!confirm('⚠️ [' + name + '] 을(를) 삭제하시겠습니까? 재고 기록도 함께 삭제됩니다.')) return;
 
+  /* 이력 먼저 삭제 후 상품 삭제 */
+  await supa.from('stock_history').delete().eq('product_code', code);
   const { error: delErr } = await supa.from('products').delete().eq('code', code);
   if(delErr){ dbErr('상품 삭제', delErr); return; }
 
