@@ -671,13 +671,12 @@ function openEditMember(memberId){
   document.getElementById('edit-status').value = m.status||'active';
   document.getElementById('edit-err').style.display='none';
 
-  /* ── 추천인 드롭다운 ── */
-  const sel = document.getElementById('edit-referrer');
-  sel.innerHTML = '<option value="">— 추천인 없음 (ROOT) —</option>' +
-    Object.values(ALL_MEMBERS)
-      .filter(x=>x.role!=='admin' && x.id!==memberId)
-      .map(x=>`<option value="${x.id}" ${x.id===m.referrerId?'selected':''}>${x.name} (${x.contact||x.id})</option>`)
-      .join('');
+  /* ── 추천인 검색 컴포넌트 초기화 ── */
+  clearRefSelection('edit');
+  /* 기존 추천인이 있으면 카드로 표시 */
+  if(m.referrerId && ALL_MEMBERS[m.referrerId]){
+    showRefCard('edit', m.referrerId);
+  }
 
   /* ── 아바타 선택 ── */
   _editAvatar = m.avatar||'av-purple';
@@ -1298,6 +1297,154 @@ async function submitRenewMember(){
   closeSheet('edit-member');
   renderAdminMemberList();
   toast('🔄 ' + m.name + ' 님 구독 연장 완료! (→ ' + newEnd + ')');
+}
+
+
+/* ════════════════════════════════════════════════════════════
+   🔍 추천인 검색 공통 엔진
+════════════════════════════════════════════════════════════ */
+
+/* ── 공통: 회원 목록 필터링 ── */
+function searchReferrerCandidates(query, excludeId){
+  const q = query.trim().toLowerCase();
+  return Object.values(ALL_MEMBERS)
+    .filter(m => m.role !== 'admin' && m.id !== excludeId)
+    .filter(m => {
+      if(!q) return true;
+      return m.name.toLowerCase().includes(q) ||
+             (m.contact||'').replace(/-/g,'').includes(q.replace(/-/g,'')) ||
+             m.id.toLowerCase().includes(q);
+    })
+    .slice(0, 30);  /* 최대 30명 */
+}
+
+/* ── 공통: 드롭다운 HTML 렌더 ── */
+function renderRefDropdown(dropId, items, onSelectFn){
+  const drop = document.getElementById(dropId);
+  if(!drop) return;
+  if(!items.length){
+    drop.innerHTML = '<div class="ref-drop-empty">검색 결과가 없습니다</div>';
+    drop.style.display = '';
+    return;
+  }
+  drop.innerHTML = items.map(m => {
+    const statusDot = m.status==='active'
+      ? '<span style="color:#43A047;font-size:.65rem;">● 활성</span>'
+      : '<span style="color:#E53935;font-size:.65rem;">● 만료</span>';
+    return `<div class="ref-drop-item" onclick="${onSelectFn}('${m.id}')">
+      <div class="ref-drop-avatar ${m.avatar}" style="background:unset;">${m.initial}</div>
+      <div style="flex:1;min-width:0;">
+        <div class="ref-drop-name">${m.name}</div>
+        <div class="ref-drop-sub">${m.depthLabel} · ${m.contact||m.id} &nbsp;${statusDot}</div>
+      </div>
+    </div>`;
+  }).join('');
+  drop.style.display = '';
+}
+
+/* ── 공통: 선택된 추천인 카드 표시 ── */
+function showRefCard(prefix, memberId){
+  const m = ALL_MEMBERS[memberId];
+  if(!m) return;
+  const card    = document.getElementById(prefix+'-ref-card');
+  const box     = document.getElementById(prefix+'-ref-search-box');
+  const cardAv  = document.getElementById(prefix+'-ref-card-av');
+  const cardNm  = document.getElementById(prefix+'-ref-card-name');
+  const cardSub = document.getElementById(prefix+'-ref-card-sub');
+  const hidden  = document.getElementById(prefix+'-referrer');
+  if(card)    card.style.display = '';
+  if(box)     box.style.display  = 'none';
+  if(cardAv)  { cardAv.textContent=m.initial; cardAv.className='ref-drop-avatar '+m.avatar; }
+  if(cardNm)  cardNm.textContent  = m.name;
+  if(cardSub) cardSub.textContent = m.depthLabel+' · '+(m.contact||m.id);
+  if(hidden)  hidden.value = memberId;
+  /* 드롭다운 닫기 */
+  const drop = document.getElementById(prefix+'-ref-dropdown');
+  if(drop) drop.style.display='none';
+}
+
+/* ── 공통: 추천인 초기화 ── */
+function clearRefSelection(prefix){
+  const card   = document.getElementById(prefix+'-ref-card');
+  const box    = document.getElementById(prefix+'-ref-search-box');
+  const input  = document.getElementById(prefix+'-ref-input');
+  const clear  = document.getElementById(prefix+'-ref-clear');
+  const hidden = document.getElementById(prefix+'-referrer');
+  const drop   = document.getElementById(prefix+'-ref-dropdown');
+  if(card)   card.style.display   = 'none';
+  if(box)    box.style.display    = '';
+  if(input)  input.value          = '';
+  if(clear)  clear.style.display  = 'none';
+  if(hidden) hidden.value         = '';
+  if(drop)   drop.style.display   = 'none';
+}
+
+/* ── 문서 클릭 시 드롭다운 닫기 ── */
+document.addEventListener('click', function(e){
+  ['reg','edit'].forEach(prefix=>{
+    const wrap = document.getElementById(prefix+'-ref-wrap');
+    if(wrap && !wrap.contains(e.target)){
+      const drop = document.getElementById(prefix+'-ref-dropdown');
+      if(drop) drop.style.display='none';
+    }
+  });
+});
+
+/* ══ 등록 폼 추천인 검색 ══ */
+function onRegRefInput(val){
+  const clearBtn = document.getElementById('reg-ref-clear');
+  if(clearBtn) clearBtn.style.display = val ? '' : 'none';
+  const excludeId = '';
+  const items = searchReferrerCandidates(val, excludeId);
+  renderRefDropdown('reg-ref-dropdown', items, 'selectRegReferrer');
+}
+function onRegRefFocus(){
+  const input = document.getElementById('reg-ref-input');
+  const items = searchReferrerCandidates(input?.value||'', '');
+  renderRefDropdown('reg-ref-dropdown', items, 'selectRegReferrer');
+}
+function selectRegReferrer(memberId){
+  showRefCard('reg', memberId);
+}
+function clearRegReferrer(){
+  clearRefSelection('reg');
+}
+function clearRegRefInput(){
+  const input = document.getElementById('reg-ref-input');
+  if(input) input.value='';
+  const clearBtn = document.getElementById('reg-ref-clear');
+  if(clearBtn) clearBtn.style.display='none';
+  const drop = document.getElementById('reg-ref-dropdown');
+  if(drop) drop.style.display='none';
+}
+
+/* ══ 수정 폼 추천인 검색 ══ */
+function onEditRefInput(val){
+  const clearBtn = document.getElementById('edit-ref-clear');
+  if(clearBtn) clearBtn.style.display = val ? '' : 'none';
+  const excludeId = document.getElementById('edit-member-id')?.value||'';
+  const items = searchReferrerCandidates(val, excludeId);
+  renderRefDropdown('edit-ref-dropdown', items, 'selectEditReferrer');
+}
+function onEditRefFocus(){
+  const input     = document.getElementById('edit-ref-input');
+  const excludeId = document.getElementById('edit-member-id')?.value||'';
+  const items = searchReferrerCandidates(input?.value||'', excludeId);
+  renderRefDropdown('edit-ref-dropdown', items, 'selectEditReferrer');
+}
+function selectEditReferrer(memberId){
+  showRefCard('edit', memberId);
+}
+function clearEditReferrer(){
+  clearRefSelection('edit');
+}
+function clearEditRefInput(){
+  const input = document.getElementById('edit-ref-input');
+  if(input) input.value='';
+  const clearBtn = document.getElementById('edit-ref-clear');
+  if(clearBtn) clearBtn.style.display='none';
+  const drop = document.getElementById('edit-ref-dropdown');
+  if(drop) drop.style.display='none';
 }
 
 </script>
@@ -2932,6 +3079,65 @@ body.mode-desktop .sub-stat-card { max-width:640px; }
   color:#fff; border-color:var(--p2);
 }
 
+
+/* ═══ 추천인 검색 컴포넌트 ═══ */
+.ref-search-wrap{
+  position:relative; margin-bottom:14px;
+}
+.ref-search-input{
+  width:100%; padding:11px 38px 11px 14px;
+  border:1.5px solid var(--border); border-radius:12px;
+  background:var(--card); color:var(--text);
+  font-size:.84rem; font-family:'Noto Sans KR',sans-serif;
+  box-sizing:border-box; outline:none;
+  transition:border-color .15s;
+}
+.ref-search-input:focus{ border-color:var(--p2); }
+.ref-search-clear{
+  position:absolute; right:10px; top:50%; transform:translateY(-50%);
+  background:none; border:none; font-size:.9rem; cursor:pointer;
+  color:var(--text3); padding:4px; line-height:1;
+}
+.ref-selected-card{
+  display:flex; align-items:center; gap:10px;
+  padding:10px 12px; border-radius:12px;
+  background:var(--p5); border:1.5px solid var(--p2);
+  margin-bottom:8px; cursor:pointer;
+}
+.ref-selected-card:hover{ background:#EDE0FF; }
+.ref-selected-name{ font-size:.83rem; font-weight:800; flex:1; }
+.ref-selected-sub{ font-size:.68rem; color:var(--text3); }
+.ref-selected-x{
+  font-size:.75rem; color:var(--text3); padding:2px 6px;
+  background:var(--card); border-radius:6px; border:1px solid var(--border);
+  white-space:nowrap;
+}
+.ref-dropdown{
+  position:absolute; top:calc(100% + 4px); left:0; right:0;
+  background:var(--card); border:1.5px solid var(--border);
+  border-radius:12px; box-shadow:0 8px 24px rgba(90,31,160,.12);
+  z-index:500; max-height:220px; overflow-y:auto;
+}
+.ref-drop-item{
+  display:flex; align-items:center; gap:10px;
+  padding:10px 14px; cursor:pointer; transition:background .1s;
+  border-bottom:1px solid var(--border);
+}
+.ref-drop-item:last-child{ border-bottom:none; }
+.ref-drop-item:hover{ background:var(--p5); }
+.ref-drop-item:active{ background:#EDE0FF; }
+.ref-drop-avatar{
+  width:32px; height:32px; border-radius:50%;
+  display:flex; align-items:center; justify-content:center;
+  font-size:.82rem; font-weight:800; flex-shrink:0;
+}
+.ref-drop-name{ font-size:.82rem; font-weight:700; }
+.ref-drop-sub{ font-size:.66rem; color:var(--text3); margin-top:1px; }
+.ref-drop-empty{
+  padding:16px; text-align:center;
+  font-size:.78rem; color:var(--text3);
+}
+
 </style>
 </head>
 <body>
@@ -3678,9 +3884,32 @@ body.mode-desktop .sub-stat-card { max-width:640px; }
             </div>
 
             <label class="form-label">추천인 변경</label>
-            <select class="form-select" id="edit-referrer">
-              <option value="">— 추천인 없음 (ROOT) —</option>
-            </select>
+            <div class="ref-search-wrap" id="edit-ref-wrap">
+              <!-- 선택된 추천인 카드 -->
+              <div id="edit-ref-card" style="display:none;" class="ref-selected-card"
+                   onclick="clearEditReferrer()">
+                <div class="ref-drop-avatar av-purple" id="edit-ref-card-av">홍</div>
+                <div style="flex:1;">
+                  <div class="ref-selected-name" id="edit-ref-card-name">홍길동</div>
+                  <div class="ref-selected-sub"  id="edit-ref-card-sub">1촌 · 010-0000-0000</div>
+                </div>
+                <span class="ref-selected-x">✕ 변경</span>
+              </div>
+              <!-- 검색 입력창 -->
+              <div id="edit-ref-search-box">
+                <input class="ref-search-input" type="text" id="edit-ref-input"
+                       placeholder="이름 또는 전화번호 검색..."
+                       oninput="onEditRefInput(this.value)"
+                       onfocus="onEditRefFocus()"
+                       autocomplete="off">
+                <button class="ref-search-clear" onclick="clearEditRefInput()" id="edit-ref-clear"
+                        style="display:none;">✕</button>
+                <!-- 드롭다운 -->
+                <div class="ref-dropdown" id="edit-ref-dropdown" style="display:none;"></div>
+              </div>
+              <!-- 숨겨진 실제 값 -->
+              <input type="hidden" id="edit-referrer" value="">
+            </div>
 
             <label class="form-label" style="margin-top:10px;">구독 상태</label>
             <select class="form-input" id="edit-status">
@@ -3916,9 +4145,32 @@ body.mode-desktop .sub-stat-card { max-width:640px; }
       </div>
 
       <label class="form-label">추천인 (선택)</label>
-      <select class="form-select" id="reg-referrer">
-        <option value="">— 추천인 없음 (ROOT) —</option>
-      </select>
+      <div class="ref-search-wrap" id="reg-ref-wrap">
+        <!-- 선택된 추천인 카드 (선택 후 표시) -->
+        <div id="reg-ref-card" style="display:none;" class="ref-selected-card"
+             onclick="clearRegReferrer()">
+          <div class="ref-drop-avatar av-purple" id="reg-ref-card-av">홍</div>
+          <div style="flex:1;">
+            <div class="ref-selected-name" id="reg-ref-card-name">홍길동</div>
+            <div class="ref-selected-sub"  id="reg-ref-card-sub">1촌 · 010-0000-0000</div>
+          </div>
+          <span class="ref-selected-x">✕ 변경</span>
+        </div>
+        <!-- 검색 입력창 -->
+        <div id="reg-ref-search-box">
+          <input class="ref-search-input" type="text" id="reg-ref-input"
+                 placeholder="이름 또는 전화번호 검색..."
+                 oninput="onRegRefInput(this.value)"
+                 onfocus="onRegRefFocus()"
+                 autocomplete="off">
+          <button class="ref-search-clear" onclick="clearRegRefInput()" id="reg-ref-clear"
+                  style="display:none;">✕</button>
+          <!-- 드롭다운 -->
+          <div class="ref-dropdown" id="reg-ref-dropdown" style="display:none;"></div>
+        </div>
+        <!-- 숨겨진 실제 값 -->
+        <input type="hidden" id="reg-referrer" value="">
+      </div>
 
       <!-- ── 출고 상품 선택 섹션 ── -->
       <div style="margin:14px 0 4px;padding:12px 14px;background:var(--p5);border-radius:12px;border:1px solid var(--border);">
@@ -5246,12 +5498,8 @@ function initRegForm(){
   const _rs=document.getElementById('reg-start'); if(_rs) _rs.value=today;
   const end=new Date(); end.setFullYear(end.getFullYear()+1);
   const _re=document.getElementById('reg-end'); if(_re) _re.value=end.toISOString().split('T')[0];
-  // 추천인 목록 채우기
-  const sel=document.getElementById('reg-referrer');
-  sel.innerHTML='<option value="">— 추천인 없음 (ROOT) —</option>';
-  Object.values(ALL_MEMBERS).filter(m=>m.role!=='admin').forEach(m=>{
-    sel.innerHTML+=`<option value="${m.id}">${m.name} (${m.depthLabel})</option>`;
-  });
+  /* 추천인 검색 컴포넌트 초기화 */
+  clearRefSelection('reg');
 }
 
 /* 입력값 검증 */
