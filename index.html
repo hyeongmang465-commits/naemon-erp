@@ -281,11 +281,7 @@ async function submitRevenue(){
    수당 지급 시트
 ══════════════════════════════════════════ */
 function syncCompMemberSelect(){
-  const sel = document.getElementById('cp-member');
-  if(!sel) return;
-  const members = Object.values(ALL_MEMBERS).filter(m=>m.role!=='admin');
-  sel.innerHTML = '<option value="">— 회원 선택 —</option>' +
-    members.map(m=>`<option value="${m.id}">${m.name} (${m.contact||m.id})</option>`).join('');
+  /* 검색 컴포넌트로 교체됨 — 호환성 유지용 빈 함수 */
 }
 
 /* ── 수당 지급 시트 열릴 때 초기화 ── */
@@ -323,8 +319,8 @@ function initCompPaySheet(){
   });
   const gradeEl=document.getElementById('cp-grade');
   if(gradeEl) gradeEl.value='';
-  const memberEl=document.getElementById('cp-member');
-  if(memberEl) memberEl.value='';
+  /* 회원 검색 컴포넌트 초기화 */
+  clearRefSelection('cp');
   const statusEl=document.getElementById('cp-status');
   if(statusEl) statusEl.value='pending';
 }
@@ -1381,7 +1377,7 @@ function clearRefSelection(prefix){
 
 /* ── 문서 클릭 시 드롭다운 닫기 ── */
 document.addEventListener('click', function(e){
-  ['reg','edit'].forEach(prefix=>{
+  ['reg','edit','cp'].forEach(prefix=>{
     const wrap = document.getElementById(prefix+'-ref-wrap');
     if(wrap && !wrap.contains(e.target)){
       const drop = document.getElementById(prefix+'-ref-dropdown');
@@ -1628,6 +1624,72 @@ function renderMembersPage(){
     const badge = document.getElementById('renew-badge');
     if(badge){ badge.textContent=cnt; badge.style.display=cnt>0?'':'none'; }
   }, 100);
+}
+
+
+/* ════════════════════════════════════════════════════════════
+   🔍 수당 지급 — 회원 검색
+════════════════════════════════════════════════════════════ */
+function onCpRefInput(val){
+  const clearBtn = document.getElementById('cp-ref-clear');
+  if(clearBtn) clearBtn.style.display = val ? '' : 'none';
+  const items = searchReferrerCandidates(val, '');
+  renderRefDropdown('cp-ref-dropdown', items, 'selectCpMember');
+}
+
+function onCpRefFocus(){
+  const input = document.getElementById('cp-ref-input');
+  const items = searchReferrerCandidates(input?.value||'', '');
+  renderRefDropdown('cp-ref-dropdown', items, 'selectCpMember');
+}
+
+function selectCpMember(memberId){
+  const m = ALL_MEMBERS[memberId];
+  if(!m) return;
+
+  /* 카드 표시 */
+  const card    = document.getElementById('cp-ref-card');
+  const box     = document.getElementById('cp-ref-search-box');
+  const cardAv  = document.getElementById('cp-ref-card-av');
+  const cardNm  = document.getElementById('cp-ref-card-name');
+  const cardSub = document.getElementById('cp-ref-card-sub');
+  const hidden  = document.getElementById('cp-member');
+  if(card)    card.style.display = '';
+  if(box)     box.style.display  = 'none';
+  if(cardAv)  { cardAv.textContent=m.initial; cardAv.className='ref-drop-avatar '+m.avatar; }
+  if(cardNm)  cardNm.textContent  = m.name;
+  if(cardSub) {
+    /* 수당 요약 정보 표시 */
+    const totalComp = ALL_COMPS
+      .filter(c=>c.member_id===memberId && c.status!=='cancelled')
+      .reduce((s,c)=>s+c.amount,0);
+    const compTxt = totalComp>0 ? ' · 누적수당 '+fmtAmt(totalComp) : '';
+    cardSub.textContent = (m.contact||m.id) + ' · ' + m.depthLabel + compTxt;
+  }
+  if(hidden)  hidden.value = memberId;
+
+  /* 드롭다운 닫기 */
+  const drop = document.getElementById('cp-ref-dropdown');
+  if(drop) drop.style.display='none';
+
+  /* 에러 숨기기 */
+  const errEl = document.getElementById('comp-pay-err');
+  if(errEl) errEl.style.display='none';
+}
+
+function clearCpMember(){
+  clearRefSelection('cp');
+  const errEl = document.getElementById('comp-pay-err');
+  if(errEl) errEl.style.display='none';
+}
+
+function clearCpRefInput(){
+  const input = document.getElementById('cp-ref-input');
+  if(input) input.value='';
+  const clearBtn = document.getElementById('cp-ref-clear');
+  if(clearBtn) clearBtn.style.display='none';
+  const drop = document.getElementById('cp-ref-dropdown');
+  if(drop) drop.style.display='none';
 }
 
 </script>
@@ -4015,11 +4077,33 @@ body.mode-desktop .sub-stat-card { max-width:640px; }
       <div class="sheet-body">
         <div id="comp-pay-err" class="form-error" style="display:none;"></div>
 
-        <!-- 수령 회원 -->
+        <!-- 수령 회원 검색 -->
         <label class="form-label">수령 회원</label>
-        <select class="form-input" id="cp-member">
-          <option value="">— 회원 선택 —</option>
-        </select>
+        <div class="ref-search-wrap" id="cp-ref-wrap">
+          <!-- 선택된 회원 카드 -->
+          <div id="cp-ref-card" style="display:none;" class="ref-selected-card"
+               onclick="clearCpMember()">
+            <div class="ref-drop-avatar av-purple" id="cp-ref-card-av">홍</div>
+            <div style="flex:1;">
+              <div class="ref-selected-name" id="cp-ref-card-name">홍길동</div>
+              <div class="ref-selected-sub"  id="cp-ref-card-sub">010-0000-0000</div>
+            </div>
+            <span class="ref-selected-x">✕ 변경</span>
+          </div>
+          <!-- 검색 입력창 -->
+          <div id="cp-ref-search-box">
+            <input class="ref-search-input" type="text" id="cp-ref-input"
+                   placeholder="이름 또는 전화번호 검색..."
+                   oninput="onCpRefInput(this.value)"
+                   onfocus="onCpRefFocus()"
+                   autocomplete="off">
+            <button class="ref-search-clear" id="cp-ref-clear"
+                    onclick="clearCpRefInput()" style="display:none;">✕</button>
+            <div class="ref-dropdown" id="cp-ref-dropdown" style="display:none;"></div>
+          </div>
+          <!-- 숨겨진 실제 값 -->
+          <input type="hidden" id="cp-member" value="">
+        </div>
 
         <!-- 수익 모델 선택 -->
         <label class="form-label" style="margin-top:14px;">수익 모델</label>
